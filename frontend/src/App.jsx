@@ -4,6 +4,7 @@ import { FiSend, FiPaperclip, FiUser, FiMessageSquare, FiUpload, FiCheck, FiTras
 import './App.css';
 
 function App() {
+  const API_BASE_URL = 'http://localhost:8000/api/v1';
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -18,20 +19,20 @@ function App() {
   const chatEndRef = useRef(null);
 
   const suggestedQuestionsList = [
-    "What are the key skills mentioned?",
-    "What is the educational background?",
-    "List the work experience",
-    "What projects are included?",
-    "What certifications does the person have?",
-    "Extract contact information",
-    "What are the technical proficiencies?",
-    "Summarize the professional experience"
+    "What are the main topics covered in this course?",
+    "Explain the grading system and evaluation criteria",
+    "What are the required textbooks or materials?",
+    "Describe the course objectives and learning outcomes",
+    "What are the assignment deadlines?",
+    "Explain the attendance policy",
+    "What prerequisites are required for this course?",
+    "Describe the final examination format"
   ];
 
   const refreshDocumentCount = async () => {
     setIsRefreshing(true);
     try {
-      const response = await axios.get('http://localhost:8000/documents/count');
+      const response = await axios.get(`${API_BASE_URL}/documents/count`);
       setDocumentCount(response.data.document_count);
     } catch (error) {
       console.error('Error fetching document count:', error);
@@ -72,7 +73,7 @@ function App() {
       const formData = new FormData();
       formData.append('file', selectedFile);
 
-      const response = await axios.post('http://localhost:8000/upload', formData, {
+      const response = await axios.post(`${API_BASE_URL}/upload`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 30000
       });
@@ -83,7 +84,9 @@ function App() {
         sender: 'system',
         timestamp: new Date().toLocaleTimeString(),
         isFileUpload: true,
-        processingType: response.data.processing_type
+        processingType: response.data.processing_type,
+        chunksProcessed: response.data.chunks_processed,
+        id: Date.now()
       }]);
       setSelectedFile(null);
       
@@ -98,16 +101,17 @@ function App() {
   };
 
   const clearAllDocuments = async () => {
-    if (!window.confirm('Are you sure you want to clear all documents?')) {
+    if (!window.confirm('Are you sure you want to clear all documents? This action cannot be undone.')) {
       return;
     }
 
     try {
-      const response = await axios.delete('http://localhost:8000/documents');
+      const response = await axios.delete(`${API_BASE_URL}/documents`);
       setMessages((prev) => [...prev, {
         text: response.data.message,
         sender: 'system',
-        timestamp: new Date().toLocaleTimeString()
+        timestamp: new Date().toLocaleTimeString(),
+        id: Date.now()
       }]);
       refreshDocumentCount();
       setMessages([]);
@@ -137,36 +141,40 @@ function App() {
     setSuggestedQuestions([]);
 
     try {
-      const formData = new FormData();
-      formData.append('query', questionText);
-
-      const response = await axios.post('http://localhost:8000/answer', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+      // Use GET request for answer endpoint
+      const response = await axios.get(`${API_BASE_URL}/answer`, {
+        params: {
+          query: questionText,
+          lang: 'en',
+          top_k: 5
+        },
         timeout: 60000
       });
-
-      // Handle both success and error responses from backend
-      if (response.data.status === 'error') {
-        setError(response.data.answer || 'Sorry, something went wrong. Please try again.');
-        return;
-      }
 
       const botMessage = {
         text: response.data.answer,
         sender: 'bot',
         timestamp: new Date().toLocaleTimeString(),
-        confidence: response.data.confidence,
-        documentCount: response.data.document_count,
-        relevantDocs: response.data.relevant_docs,
+        confidence: response.data.confidence || 0,
+        documentCount: response.data.document_count || 0,
+        relevantDocs: response.data.relevant_docs || 0,
         citations: response.data.citations || [],
         answerLength: response.data.answer?.length || 0,
+        latency: response.data.latency_ms || 0,
         id: Date.now() + 1
       };
       setMessages((prev) => [...prev, botMessage]);
     } catch (err) {
       console.error('API Error:', err);
+      
       if (err.response?.status === 404) {
         setError('No documents found. Please upload course materials first.');
+      } else if (err.response?.status === 422) {
+        setError('Invalid request. Please try rephrasing your question.');
+      } else if (err.response?.status === 500) {
+        setError('Server error. Please try again later.');
+      } else if (err.code === 'ECONNABORTED') {
+        setError('Request timeout. Please try again.');
       } else {
         setError('Sorry, something went wrong. Please try again.');
       }
@@ -190,6 +198,9 @@ function App() {
   };
 
   const clearChat = () => {
+    if (messages.length > 0 && !window.confirm('Are you sure you want to clear the chat history?')) {
+      return;
+    }
     setMessages([]);
     setError(null);
     setActiveCitations([]);
@@ -204,7 +215,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `chat-export-${new Date().toISOString().split('T')[0]}.txt`;
+    a.download = `course-chat-export-${new Date().toISOString().split('T')[0]}.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -220,7 +231,7 @@ function App() {
 
     try {
       // Fetch source details from backend
-      const response = await axios.get(`http://localhost:8000/source/${citation.source_id}`);
+      const response = await axios.get(`${API_BASE_URL}/source/${citation.source_id}`);
       
       const citationWithDetails = {
         ...citation,
@@ -236,21 +247,20 @@ function App() {
     }
   };
 
+  // Utility to format citations in the answer text
   const formatTextWithCitations = (text) => {
     if (!text) return text;
-    
-    // Updated regex to match backend citation format [S1:pp3]
-    const parts = text.split(/(\[S\d+:pp\d+\])/g);
-    
+    // Match citation patterns like [S1:pp3]
+    const parts = text.split(/(\[S\d+:(?:pg|pp)\d+\])/g);
     return parts.map((part, index) => {
-      if (part.match(/\[S\d+:pp\d+\]/)) {
+      if (part.match(/\[S\d+:(?:pg|pp)\d+\]/)) {
         return (
-          <mark key={index} className="citation-marker">
+          <mark key={`citation-${index}-${part}`} className="citation-marker">
             {part}
           </mark>
         );
       }
-      return part;
+      return <span key={`text-${index}-${part.substring(0,10)}`}>{part}</span>;
     });
   };
 
@@ -263,7 +273,7 @@ function App() {
       <div className="sidebar">
         <div className="sidebar-header">
           <FiBook className="logo" />
-          <h2>Course Q&A</h2> {/* Updated title to match backend */}
+          <h2>Course Q&A</h2>
         </div>
         
         <div className="document-stats">
@@ -275,6 +285,7 @@ function App() {
                 onClick={refreshDocumentCount} 
                 className="refresh-btn"
                 disabled={isRefreshing}
+                title="Refresh document count"
               >
                 <FiRefreshCw className={isRefreshing ? 'spinning' : ''} />
               </button>
@@ -287,6 +298,7 @@ function App() {
             className="clear-chat-btn"
             onClick={clearChat}
             disabled={messages.length === 0}
+            title="Clear chat history"
           >
             <FiX /> Clear Chat
           </button>
@@ -295,6 +307,7 @@ function App() {
             className="export-chat-btn"
             onClick={exportChat}
             disabled={messages.length === 0}
+            title="Export chat to file"
           >
             <FiDownload /> Export Chat
           </button>
@@ -303,13 +316,14 @@ function App() {
             className="clear-docs-btn"
             onClick={clearAllDocuments}
             disabled={documentCount === 0}
+            title="Remove all documents"
           >
             <FiTrash2 /> Clear Docs
           </button>
         </div>
 
         <div className="upload-section">
-          <h3>Upload Course Material</h3> {/* Updated label */}
+          <h3>Upload Course Material</h3>
           <div className="upload-controls">
             <label htmlFor="file-upload" className="file-upload-label">
               <FiPaperclip />
@@ -338,6 +352,7 @@ function App() {
                   <button 
                     onClick={removeSelectedFile}
                     className="remove-btn"
+                    title="Remove file"
                   >
                     <FiX />
                   </button>
@@ -355,19 +370,21 @@ function App() {
         </div>
 
         <div className="usage-tips">
-          <h4>💡 Course Features</h4> {/* Updated tips */}
+          <h4>💡 Course Features</h4>
           <ul>
             <li>Semantic section-based extraction</li>
             <li>Hybrid retrieval with re-ranking</li>
             <li>Structured answer generation</li>
             <li>Clickable source references</li>
+            <li>Multilingual support</li>
+            <li>Citation-based answers</li>
           </ul>
         </div>
       </div>
 
       <div className="main-content">
         <div className="chat-header">
-          <h1>Course Q&A Chatbot</h1> {/* Updated title */}
+          <h1>Course Q&A Chatbot</h1>
           <p>Intelligent information extraction from course materials with precise citations</p>
         </div>
 
@@ -375,7 +392,7 @@ function App() {
           {messages.length === 0 ? (
             <div className="welcome-message">
               <FiSearch className="welcome-icon" />
-              <h2>Course Material Analysis</h2> {/* Updated welcome message */}
+              <h2>Course Material Analysis</h2>
               <p>Upload course materials and ask specific questions to get precise, cited information</p>
               
               {documentCount > 0 && suggestedQuestions.length > 0 && (
@@ -384,7 +401,7 @@ function App() {
                   <div className="question-grid">
                     {suggestedQuestions.map((question, index) => (
                       <button
-                        key={index}
+                        key={`suggested-${index}-${question.substring(0,10)}`}
                         className="question-btn"
                         onClick={() => handleSuggestedQuestion(question)}
                         disabled={isLoading}
@@ -396,20 +413,22 @@ function App() {
                 </div>
               )}
               
-              <div className="welcome-features">
-                <div className="feature">
-                  <FiSearch />
-                  <span>Semantic section detection</span>
+              {documentCount === 0 && (
+                <div className="welcome-features">
+                  <div className="feature">
+                    <FiUpload />
+                    <span>Upload PDFs, DOCX, CSV, or text files</span>
+                  </div>
+                  <div className="feature">
+                    <FiMessageSquare />
+                    <span>Ask questions about course content</span>
+                  </div>
+                  <div className="feature">
+                    <FiDownload />
+                    <span>Get precise answers with citations</span>
+                  </div>
                 </div>
-                <div className="feature">
-                  <FiMessageSquare />
-                  <span>Precise information extraction</span>
-                </div>
-                <div className="feature">
-                  <FiDownload />
-                  <span>Citation-based answers</span>
-                </div>
-              </div>
+              )}
             </div>
           ) : (
             <div className="messages-container">
@@ -421,29 +440,41 @@ function App() {
                   <div className="message-content">
                     <div className="message-header">
                       <span className="sender-name">
-                        {msg.sender === 'user' ? 'You' : 'Teaching Assistant'} {/* Updated bot name */}
+                        {msg.sender === 'user' ? 'You' : 'Teaching Assistant'}
                       </span>
                       <span className="message-time">{msg.timestamp}</span>
                     </div>
                     
                     <div className="message-text">
-                      {formatTextWithCitations(msg.text)}
+                      {msg.sender === 'system' && msg.isFileUpload ? (
+                        <>
+                          <strong>{msg.text}</strong>
+                          {msg.chunksProcessed && (
+                            <div className="upload-details">
+                              Processed {msg.chunksProcessed} chunks via {msg.processingType}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        formatTextWithCitations(msg.text)
+                      )}
                     </div>
                     
                     {msg.sender === 'bot' && msg.citations && msg.citations.length > 0 && (
                       <div className="citations-section">
                         <div className="citations-header">
                           <FiExternalLink />
-                          <span>Source Sections:</span>
+                          <span>Source References:</span>
                         </div>
                         <div className="citations-list">
                           {msg.citations.map((citation, index) => (
                             <button
-                              key={index}
+                              key={`citation-${index}-${citation.source_id}`}
                               className={`citation-btn ${activeCitations.some(c => c.source_id === citation.source_id) ? 'active' : ''}`}
                               onClick={() => toggleCitation(citation)}
+                              title={`View source ${citation.source_id}`}
                             >
-                              {citation.source_id} ({citation.span}) {/* Updated to show span instead of section */}
+                              {citation.source_id} ({citation.span})
                             </button>
                           ))}
                         </div>
@@ -452,9 +483,10 @@ function App() {
                     
                     {msg.sender === 'bot' && (
                       <div className="message-meta">
-                        <span>Docs: {msg.documentCount}</span>
+                        <span>Documents: {msg.documentCount}</span>
                         {msg.relevantDocs > 0 && <span>Matches: {msg.relevantDocs}</span>}
                         {msg.confidence > 0 && <span>Confidence: {Math.round(msg.confidence * 100)}%</span>}
+                        {msg.latency > 0 && <span>Time: {msg.latency}ms</span>}
                       </div>
                     )}
                   </div>
@@ -467,7 +499,7 @@ function App() {
                     <FiMessageSquare />
                   </div>
                   <div className="message-content">
-                    <div className="thinking">Analyzing course materials...</div> {/* Updated loading text */}
+                    <div className="thinking">Analyzing course materials...</div>
                     <div className="loading-dots">
                       <span></span>
                       <span></span>
@@ -485,17 +517,17 @@ function App() {
           <div className="citations-panel">
             <div className="panel-header">
               <h3>Source Details</h3>
-              <button onClick={() => setActiveCitations([])} className="close-panel">
+              <button onClick={() => setActiveCitations([])} className="close-panel" title="Close sources">
                 <FiX />
               </button>
             </div>
             <div className="citations-content">
               {activeCitations.map((citation, index) => (
-                <div key={index} className="citation-detail">
-                  <h4>{citation.source_id} - {citation.span}</h4> {/* Updated to show span */}
+                <div key={`active-citation-${index}-${citation.source_id}`} className="citation-detail">
+                  <h4>Source {citation.source_id} - {citation.span}</h4>
                   {citation.section && <div className="citation-section">Section: {citation.section}</div>}
                   <div className="citation-text">
-                    {citation.fullText || citation.text} {/* Show full text if available */}
+                    {citation.fullText || citation.text}
                   </div>
                   <div className="citation-meta">
                     <span>Confidence: {Math.round(citation.confidence * 100)}%</span>
@@ -511,7 +543,7 @@ function App() {
           <div className="error-message">
             <FiX className="error-icon" />
             <span>{error}</span>
-            <button onClick={() => setError(null)} className="error-close">
+            <button onClick={() => setError(null)} className="error-close" title="Dismiss error">
               <FiX />
             </button>
           </div>
@@ -531,6 +563,7 @@ function App() {
               type="submit" 
               disabled={isLoading || isUploading || !query.trim()}
               className="send-button"
+              title="Send message"
             >
               <FiSend />
             </button>
