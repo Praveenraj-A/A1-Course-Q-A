@@ -22,6 +22,7 @@ from bson import ObjectId
 from contextlib import asynccontextmanager
 import logging
 import asyncio
+from spellchecker import SpellChecker
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -30,6 +31,9 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Initialize spell checker
+spell = SpellChecker()
 
 # Initialize FastAPI app with lifespan management
 @asynccontextmanager
@@ -291,23 +295,150 @@ class SourceResponse(BaseModel):
     metadata: Dict[str, Any]
     source_id: str
 
-# Enhanced Question Analysis with typo handling
+# Enhanced text processing functions
+def normalize_text(text: str) -> str:
+    """Normalize text for better matching - handle plurals, verb forms, etc."""
+    if not text:
+        return ""
+    
+    # Convert to lowercase
+    text = text.lower()
+    
+    # Handle common pluralizations and variations
+    variations = {
+        r'navigations?\b': 'navigation',
+        r'browsers?\b': 'browser',
+        r'drivers?\b': 'driver',
+        r'automations?\b': 'automation',
+        r'clicks?\b': 'click',
+        r'opens?\b': 'open',
+        r'tabs?\b': 'tab',
+        r'windows?\b': 'window',
+        r'buttons?\b': 'button',
+        r'forms?\b': 'form',
+        r'elements?\b': 'element',
+        r'pages?\b': 'page',
+        r'websites?\b': 'website',
+        r'applications?\b': 'application',
+        r'methods?\b': 'method',
+        r'functions?\b': 'function',
+        r'variables?\b': 'variable',
+        r'classes?\b': 'class',
+        r'objects?\b': 'object',
+    }
+    
+    for pattern, replacement in variations.items():
+        text = re.sub(pattern, replacement, text)
+    
+    return text
+
+def expand_query_terms(query: str) -> list[str]:
+    """Expand query with synonyms and related terms"""
+    base_terms = query.lower().split()
+    expanded_terms = set(base_terms)
+    
+    # Common synonyms and related terms
+    synonyms = {
+        "navigate": ["navigation", "browse", "go to", "visit", "open"],
+        "browser": ["web browser", "chrome", "firefox", "safari", "edge"],
+        "driver": ["webdriver", "selenium driver", "browser driver"],
+        "open": ["launch", "start", "load", "initialize"],
+        "tab": ["browser tab", "new tab", "window tab"],
+        "click": ["press", "select", "tap", "choose"],
+        "find": ["locate", "search", "identify", "detect"],
+        "get": ["retrieve", "obtain", "fetch", "acquire"],
+        "how": ["method", "way", "process", "procedure"],
+        "what": ["explain", "describe", "define", "meaning"],
+        "selenium": ["web automation", "browser automation", "web testing"],
+        "webdriver": ["browser driver", "selenium driver", "automation driver"],
+    }
+    
+    for term in base_terms:
+        if term in synonyms:
+            expanded_terms.update(synonyms[term])
+    
+    return list(expanded_terms)
+
+def calculate_semantic_similarity(text1: str, text2: str) -> float:
+    """Calculate semantic similarity between two texts using word overlap and pattern matching"""
+    if not text1 or not text2:
+        return 0.0
+    
+    # Normalize both texts
+    norm1 = normalize_text(text1)
+    norm2 = normalize_text(text2)
+    
+    # Split into words
+    words1 = set(re.findall(r'\w+', norm1))
+    words2 = set(re.findall(r'\w+', norm2))
+    
+    if not words1 or not words2:
+        return 0.0
+    
+    # Calculate Jaccard similarity
+    intersection = len(words1.intersection(words2))
+    union = len(words1.union(words2))
+    
+    if union == 0:
+        return 0.0
+    
+    jaccard_similarity = intersection / union
+    
+    # Bonus for exact phrase matches
+    exact_match_boost = 0.0
+    if text1.lower() in text2.lower() or text2.lower() in text1.lower():
+        exact_match_boost = 0.3
+    
+    # Bonus for shared important terms
+    important_terms = ["navigation", "browser", "driver", "selenium", "webdriver", "click", "open", "tab", "window", "automation"]
+    shared_important = len([term for term in important_terms if term in norm1 and term in norm2])
+    important_boost = shared_important * 0.1
+    
+    return min(jaccard_similarity + exact_match_boost + important_boost, 1.0)
+
+# Enhanced Question Analysis with improved typo handling
 def analyze_question_type(query: str) -> Dict[str, Any]:
-    """Analyze the question to determine its type and requirements with typo handling"""
+    """Analyze the question to determine its type and requirements with enhanced typo handling"""
     query_lower = query.lower().strip()
     
-    # Handle common typos
-    query_lower = query_lower.replace("id", "is")  # Fix "who id" -> "who is"
-    query_lower = query_lower.replace("hwodo", "how do")  # Fix "hwodo" -> "how do"
+    # Enhanced typo handling for common misspellings
+    typo_corrections = {
+        "id": "is", "hwodo": "how do", "whos": "who is", "wats": "what is",
+        "navigations": "navigation", "selenimum": "selenium", "webdriverr": "webdriver",
+        "brower": "browser", "drivr": "driver", "automat": "automate", "expln": "explain",
+        "hw": "how", "wat": "what", "wen": "when", "wer": "where", "y": "why"
+    }
+    
+    for typo, correction in typo_corrections.items():
+        query_lower = query_lower.replace(typo, correction)
+    
+    # Auto-correct spelling using spell checker
+    words = query_lower.split()
+    corrected_words = []
+    for word in words:
+        if len(word) > 2:  # Only correct words longer than 2 characters
+            correction = spell.correction(word)
+            if correction and correction != word:
+                corrected_words.append(correction)
+                logger.info(f"🔧 Corrected '{word}' to '{correction}'")
+            else:
+                corrected_words.append(word)
+        else:
+            corrected_words.append(word)
+    
+    query_lower = " ".join(corrected_words)
     
     question_types = {
         "who": any(keyword in query_lower for keyword in ["who is", "who are", "who was", "who's", "this person"]),
-        "what": any(keyword in query_lower for keyword in ["what is", "what are", "what does", "what's"]),
+        "what": any(keyword in query_lower for keyword in ["what is", "what are", "what does", "what's", "explain"]),
         "how": any(keyword in query_lower for keyword in ["how to", "how do", "how does", "how can", "how i"]),
+        "why": any(keyword in query_lower for keyword in ["why", "reason", "purpose"]),
         "contact": any(keyword in query_lower for keyword in ["contact", "email", "phone", "mobile", "number", "reach", "get in touch"]),
         "skills": any(keyword in query_lower for keyword in ["skills", "technologies", "languages", "frameworks", "proficient in"]),
         "projects": any(keyword in query_lower for keyword in ["projects", "project", "work on", "built", "developed", "explain project"]),
         "education": any(keyword in query_lower for keyword in ["education", "degree", "college", "university", "study"]),
+        "technical": any(keyword in query_lower for keyword in ["code", "program", "script", "function", "method", "class", "variable"]),
+        "navigation": any(keyword in query_lower for keyword in ["navigate", "navigation", "browser", "url", "website", "webpage"]),
     }
     
     # Remove name detection - search names in documents instead
@@ -327,8 +458,11 @@ def analyze_question_type(query: str) -> Dict[str, Any]:
         "requires_skills": question_types["skills"],
         "requires_projects": question_types["projects"],
         "requires_education": question_types["education"],
+        "requires_technical": question_types["technical"],
+        "requires_navigation": question_types["navigation"],
         "name_detected": name_detected,
-        "original_query": query
+        "original_query": query,
+        "processed_query": query_lower
     }
 
 # Content Extraction Functions
@@ -591,42 +725,59 @@ async def gemini_chat_completion(prompt: str, max_tokens: int = 2000) -> Dict[st
         return {"error": f"Google Gemini API request failed: {str(e)}"}
 
 def semantic_search(query: str, top_k: int = 20) -> List[Dict[str, Any]]:
-    """Enhanced semantic search with better relevance scoring"""
+    """Enhanced semantic search with better relevance scoring and spelling tolerance"""
     try:
         if documents_collection is None:
             return []
         
-        # Clean query
-        clean_query = re.sub(r'[^\w\s]', ' ', query.lower()).strip()
-        query_terms = clean_query.split()
+        # Normalize and expand query
+        normalized_query = normalize_text(query)
+        expanded_terms = expand_query_terms(query)
         
-        if not query_terms:
-            return []
+        logger.info(f"🔍 Search: '{query}' -> Normalized: '{normalized_query}'")
+        logger.info(f"📝 Expanded terms: {expanded_terms}")
         
-        # Build search queries with different strategies
+        # Build search queries with multiple strategies
         search_queries = []
         
         # 1. Exact phrase match (boosted)
-        if len(query_terms) > 1:
-            exact_phrase = query.lower()
+        if len(normalized_query.split()) > 1:
+            exact_phrase = normalized_query
             search_queries.append({
                 "filter": {"content": {"$regex": re.escape(exact_phrase), "$options": "i"}},
-                "boost": 10.0
+                "boost": 15.0,
+                "type": "exact_phrase"
             })
         
-        # 2. All query terms (AND)
-        and_conditions = [{"content": {"$regex": re.escape(term), "$options": "i"}} for term in query_terms]
-        search_queries.append({
-            "filter": {"$and": and_conditions},
-            "boost": 5.0
-        })
+        # 2. All expanded terms (AND)
+        if expanded_terms:
+            and_conditions = [{"content": {"$regex": re.escape(term), "$options": "i"}} for term in expanded_terms[:5]]
+            if and_conditions:
+                search_queries.append({
+                    "filter": {"$and": and_conditions},
+                    "boost": 8.0,
+                    "type": "all_terms"
+                })
         
-        # 3. Any query terms (OR)
-        or_conditions = [{"content": {"$regex": re.escape(term), "$options": "i"}} for term in query_terms]
-        search_queries.append({
-            "filter": {"$or": or_conditions},
-            "boost": 2.0
-        })
+        # 3. Any expanded terms (OR)
+        if expanded_terms:
+            or_conditions = [{"content": {"$regex": re.escape(term), "$options": "i"}} for term in expanded_terms[:8]]
+            if or_conditions:
+                search_queries.append({
+                    "filter": {"$or": or_conditions},
+                    "boost": 3.0,
+                    "type": "any_terms"
+                })
+        
+        # 4. Individual term matches with semantic similarity
+        individual_terms = normalized_query.split()
+        for term in individual_terms[:4]:
+            if len(term) > 2:  # Only search for terms longer than 2 characters
+                search_queries.append({
+                    "filter": {"content": {"$regex": re.escape(term), "$options": "i"}},
+                    "boost": 2.0,
+                    "type": f"term_{term}"
+                })
         
         # Execute all search strategies
         all_results = []
@@ -650,32 +801,66 @@ def semantic_search(query: str, top_k: int = 20) -> List[Dict[str, Any]]:
                     chunk_id = result["chunk_id"]
                     if chunk_id not in seen_chunks:
                         seen_chunks.add(chunk_id)
-                        # Calculate enhanced relevance score
-                        score = calculate_semantic_relevance(result["content"], query, search_query["boost"])
+                        # Calculate enhanced relevance score with semantic similarity
+                        score = calculate_enhanced_relevance(result["content"], query, search_query["boost"])
                         result["score"] = score
+                        result["search_type"] = search_query["type"]
                         all_results.append(result)
                         
             except Exception as e:
-                logger.warning(f"Search query failed: {e}")
+                logger.warning(f"Search query {search_query['type']} failed: {e}")
                 continue
+        
+        # If no results found, try a more lenient search
+        if not all_results:
+            logger.info("🔄 No results found, trying lenient search...")
+            lenient_results = list(documents_collection.find(
+                {"$text": {"$search": query}},
+                {
+                    "chunk_id": 1,
+                    "content": 1,
+                    "section": 1,
+                    "filename": 1,
+                    "page_number": 1,
+                    "metadata": 1,
+                    "score": {"$meta": "textScore"}
+                }
+            ).sort([("score", {"$meta": "textScore"})]).limit(top_k))
+            
+            for result in lenient_results:
+                chunk_id = result["chunk_id"]
+                if chunk_id not in seen_chunks:
+                    seen_chunks.add(chunk_id)
+                    result["score"] = result.get("score", 0.5) * 0.7  # Reduce score for text search
+                    result["search_type"] = "text_search"
+                    all_results.append(result)
         
         # Sort by score and return top results
         all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        
+        logger.info(f"📚 Found {len(all_results)} total results, returning top {top_k}")
+        for i, result in enumerate(all_results[:3]):
+            logger.info(f"   {i+1}. Score: {result.get('score', 0):.2f}, Type: {result.get('search_type', 'unknown')}")
+        
         return all_results[:top_k]
             
     except Exception as e:
         logger.error(f"Error in semantic search: {e}")
         return []
 
-def calculate_semantic_relevance(content: str, query: str, base_boost: float = 1.0) -> float:
-    """Calculate semantic relevance between content and query"""
+def calculate_enhanced_relevance(content: str, query: str, base_boost: float = 1.0) -> float:
+    """Calculate enhanced relevance between content and query with semantic similarity"""
     score = 0.0
     query_lower = query.lower()
     content_lower = content.lower()
     
+    # Calculate semantic similarity
+    semantic_similarity = calculate_semantic_similarity(query, content)
+    score += semantic_similarity * 10.0 * base_boost
+    
     # Exact phrase match (highest priority)
     if query_lower in content_lower:
-        score += 15.0 * base_boost
+        score += 20.0 * base_boost
     
     # Word overlap with term frequency consideration
     query_words = set(re.findall(r'\w+', query_lower))
@@ -685,32 +870,39 @@ def calculate_semantic_relevance(content: str, query: str, base_boost: float = 1
     # Calculate word overlap
     matching_words = query_words.intersection(content_word_set)
     if matching_words:
-        score += len(matching_words) * 2.0 * base_boost
+        score += len(matching_words) * 3.0 * base_boost
     
     # Term frequency bonus
     for word in matching_words:
         term_freq = content_words.count(word)
-        score += min(term_freq * 0.3, 3.0) * base_boost
+        score += min(term_freq * 0.5, 5.0) * base_boost
     
     # Position bonus (content at beginning is often more important)
     for word in query_words:
         if word in content_lower:
             position = content_lower.find(word)
-            if position < len(content_lower) * 0.2:  # First 20%
+            if position < len(content_lower) * 0.3:  # First 30%
+                score += 2.0 * base_boost
+            elif position < len(content_lower) * 0.6:  # First 60%
                 score += 1.0 * base_boost
     
     # Section heading bonus
-    if any(marker in content_lower for marker in [":", " - ", "—", "#", "heading", "title"]):
-        score += 1.5 * base_boost
-    
-    # Context type bonus
-    if any(keyword in content_lower for keyword in ["navigation", "browser", "driver", "selenium", "webdriver"]):
+    if any(marker in content_lower for marker in [":", " - ", "—", "#", "heading", "title", "chapter"]):
         score += 2.0 * base_boost
     
-    return min(score, 30.0)  # Cap score
+    # Context type bonus
+    tech_keywords = ["navigation", "browser", "driver", "selenium", "webdriver", "click", "open", "tab", "window", "automation"]
+    if any(keyword in content_lower for keyword in tech_keywords):
+        score += 3.0 * base_boost
+    
+    # Length bonus (longer content often has more context)
+    length_bonus = min(len(content) / 1000, 2.0)  # Cap at 2.0
+    score += length_bonus
+    
+    return min(score, 50.0)  # Cap score
 
 def hybrid_retrieval(query: str, top_k: int = 15) -> List[Dict[str, Any]]:
-    """Enhanced hybrid retrieval combining multiple strategies"""
+    """Enhanced hybrid retrieval with better tolerance for spelling variations"""
     
     # Get semantic search results
     semantic_results = semantic_search(query, top_k * 3)
@@ -749,7 +941,7 @@ def hybrid_retrieval(query: str, top_k: int = 15) -> List[Dict[str, Any]]:
             seen_chunks.add(chunk_id)
             # Combine scores if available
             if 'score' in result and 'vector_score' in result:
-                result['combined_score'] = (result['score'] * 0.3 + result['vector_score'] * 0.7)
+                result['combined_score'] = (result['score'] * 0.4 + result['vector_score'] * 0.6)
             elif 'vector_score' in result:
                 result['combined_score'] = result['vector_score']
             all_results.append(result)
@@ -768,7 +960,7 @@ def hybrid_retrieval(query: str, top_k: int = 15) -> List[Dict[str, Any]]:
     # Re-rank with cross-encoder if available
     if cross_encoder is not None and all_results:
         try:
-            pairs = [(query, doc["content"][:2000]) for doc in all_results[:top_k*2]]  # Limit content length
+            pairs = [(query, doc["content"][:2000]) for doc in all_results[:top_k*2]]
             rerank_scores = cross_encoder.predict(pairs)
             
             for i, doc in enumerate(all_results[:top_k*2]):
@@ -778,53 +970,81 @@ def hybrid_retrieval(query: str, top_k: int = 15) -> List[Dict[str, Any]]:
         except Exception as e:
             logger.warning(f"Re-ranking failed: {e}")
     
-    # Filter out low relevance results but be more lenient
+    # Be more lenient with relevance threshold
     filtered_results = []
     for result in all_results:
         score = result.get('rerank_score', result.get('combined_score', result.get('score', 0)))
-        if score > 0.2:  # Lower minimum relevance threshold
+        if score > 0.1:  # Much lower threshold to catch more variations
             filtered_results.append(result)
     
+    logger.info(f"🎯 Hybrid retrieval found {len(filtered_results)} relevant chunks")
     return filtered_results[:top_k]
 
 def question_aware_retrieval(query: str, question_type: Dict[str, Any], top_k: int = 15) -> List[Dict[str, Any]]:
-    """Enhanced retrieval that considers question type"""
+    """Enhanced retrieval that considers question type and handles variations"""
     
-    # Base retrieval
-    results = hybrid_retrieval(query, top_k * 2)
+    # Use processed query for retrieval if available
+    retrieval_query = question_type.get('processed_query', query)
+    
+    # Base retrieval with the query
+    results = hybrid_retrieval(retrieval_query, top_k * 2)
+    
+    # If we have few results, try with the original query as fallback
+    if len(results) < 3 and question_type.get('processed_query') != query:
+        logger.info("🔄 Few results found, trying with original query...")
+        additional_results = hybrid_retrieval(question_type['original_query'], top_k)
+        # Merge results
+        seen_chunks = set(r["chunk_id"] for r in results)
+        for result in additional_results:
+            if result["chunk_id"] not in seen_chunks:
+                results.append(result)
+                seen_chunks.add(result["chunk_id"])
     
     if not results:
         return []
     
-    # Question-type specific boosting
+    # Question-type specific boosting with enhanced matching
     boosted_results = []
     for result in results:
         content = result["content"].lower()
         score = result.get('rerank_score', result.get('combined_score', result.get('score', 0.5)))
         
-        # Boost based on question type
+        # Enhanced content analysis
+        normalized_content = normalize_text(content)
+        
+        # Boost based on question type with fuzzy matching
         if question_type["requires_person_info"]:
-            if any(keyword in content for keyword in ["student", "name", "person", "individual", "education", "contact"]):
+            if any(keyword in normalized_content for keyword in ["student", "name", "person", "individual", "education", "contact"]):
                 score *= 2.0
-            if "student name" in content or "name:" in content or "email" in content:
+            if "student name" in normalized_content or "name:" in normalized_content or "email" in normalized_content:
                 score *= 3.0
                 
         elif question_type["requires_contact"]:
-            if any(keyword in content for keyword in ["email", "phone", "mobile", "contact", "@", "gmail"]):
+            if any(keyword in normalized_content for keyword in ["email", "phone", "mobile", "contact", "@", "gmail"]):
                 score *= 3.0
                 
         elif question_type["requires_skills"]:
-            if any(keyword in content for keyword in ["skills", "technologies", "languages", "frameworks", "tools"]):
+            if any(keyword in normalized_content for keyword in ["skills", "technologies", "languages", "frameworks", "tools"]):
                 score *= 2.5
-            if any(keyword in content for keyword in ["python", "java", "javascript", "html", "css", "react", "node"]):
+            if any(keyword in normalized_content for keyword in ["python", "java", "javascript", "html", "css", "react", "node"]):
                 score *= 2.0
                 
         elif question_type["requires_projects"]:
-            if any(keyword in content for keyword in ["projects", "project", "built", "developed", "created"]):
+            if any(keyword in normalized_content for keyword in ["projects", "project", "built", "developed", "created"]):
                 score *= 3.0
                 
         elif question_type["requires_education"]:
-            if any(keyword in content for keyword in ["education", "degree", "college", "university", "institute"]):
+            if any(keyword in normalized_content for keyword in ["education", "degree", "college", "university", "institute"]):
+                score *= 2.5
+                
+        elif question_type["requires_technical"]:
+            if any(keyword in normalized_content for keyword in ["code", "program", "script", "function", "method", "class", "variable"]):
+                score *= 2.0
+                
+        elif question_type["requires_navigation"]:
+            if any(keyword in normalized_content for keyword in ["navigate", "navigation", "browser", "url", "website", "webpage"]):
+                score *= 3.0
+            if any(keyword in normalized_content for keyword in ["selenium", "webdriver", "driver", "browser", "click", "open"]):
                 score *= 2.5
                 
         result["question_aware_score"] = score
@@ -832,6 +1052,8 @@ def question_aware_retrieval(query: str, question_type: Dict[str, Any], top_k: i
     
     # Sort by boosted score
     boosted_results.sort(key=lambda x: x.get("question_aware_score", 0), reverse=True)
+    
+    logger.info(f"🎯 Question-aware boosting applied, returning {len(boosted_results[:top_k])} results")
     return boosted_results[:top_k]
 
 # Answer Generation Functions - IMPROVED VERSION
@@ -856,7 +1078,7 @@ async def generate_comprehensive_answer(query: str, context_chunks: List[Dict[st
                 "score": chunk.get('rerank_score', chunk.get('combined_score', 0.7))
             }
         
-        # Create enhanced Gemini prompt with better instructions
+        # Create enhanced Gemini prompt with spelling tolerance instructions
         system_prompt = f"""You are an expert educational assistant. Answer the user's question using ONLY the provided context from course documents.
 
 CONTEXT DOCUMENTS:
@@ -874,7 +1096,8 @@ CRITICAL INSTRUCTIONS:
 7. If the context contains multiple relevant points, include all of them
 8. Structure your answer to be clear and helpful
 9. Provide complete code examples or explanations when they appear in the context
-10. If the query is about a technical concept (like navigation), provide the complete technical explanation from the context
+10. If the query seems to have spelling variations (like 'navigations' vs 'navigation'), interpret it based on the context
+11. Be tolerant of minor spelling differences and focus on semantic meaning
 
 ANSWER:"""
         
@@ -951,8 +1174,8 @@ async def generate_fallback_answer(query: str) -> Dict[str, Any]:
         if broader_results:
             # Use the broader results to generate an answer
             return generate_enhanced_structured_answer(query, broader_results[:8], {"type": "general"})
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Broader search failed: {e}")
     
     return {
         "answer": "I couldn't find specific information about this in the uploaded course documents. The documents may not contain information about this specific topic. Please try asking about content that exists in your uploaded materials.",
@@ -974,10 +1197,12 @@ def generate_enhanced_structured_answer(query: str, context_chunks: List[Dict[st
     relevant_content = []
     for chunk in context_chunks[:6]:
         content = chunk["content"]
-        # Check if this chunk is relevant to the query
-        query_terms = set(query.lower().split())
-        content_terms = set(content.lower().split())
-        if len(query_terms & content_terms) > 0 or any(term in content.lower() for term in query.lower().split()):
+        # Check if this chunk is relevant to the query using normalized comparison
+        normalized_content = normalize_text(content)
+        normalized_query = normalize_text(query)
+        
+        if (any(term in normalized_content for term in normalized_query.split()) or 
+            calculate_semantic_similarity(query, content) > 0.3):
             relevant_content.append(content)
     
     if relevant_content:
@@ -990,7 +1215,10 @@ def generate_enhanced_structured_answer(query: str, context_chunks: List[Dict[st
         
         for sentence in sentences:
             sentence_lower = sentence.lower()
-            if (any(term in sentence_lower for term in query.lower().split()) and 
+            normalized_sentence = normalize_text(sentence)
+            normalized_query = normalize_text(query)
+            
+            if (any(term in normalized_sentence for term in normalized_query.split()) and 
                 len(sentence.strip()) > 20):
                 relevant_sentences.append(sentence.strip())
         
@@ -1037,9 +1265,9 @@ def calculate_enhanced_confidence(context_chunks: List[Dict[str, Any]], query: s
     specificity_keywords = ["specifically", "for example", "including", "such as", "details", "code", "example"]
     specificity_factor = 1.0 if any(keyword in answer.lower() for keyword in specificity_keywords) else 0.7
     
-    # Query coverage factor
-    query_terms = set(query.lower().split())
-    answer_terms = set(answer.lower().split())
+    # Query coverage factor with normalized text
+    query_terms = set(normalize_text(query).split())
+    answer_terms = set(normalize_text(answer).split())
     coverage_factor = len(query_terms & answer_terms) / len(query_terms) if query_terms else 0.5
     
     confidence = (avg_retrieval_score * 0.6 + answer_length_factor * 0.2 + 
@@ -1058,7 +1286,8 @@ async def root():
             "Enhanced Google Gemini AI Integration",
             "Improved Context Retrieval", 
             "Better Answer Relevance",
-            "Advanced Citation System"
+            "Advanced Citation System",
+            "Spelling Variation Tolerance"
         ]
     }
 
@@ -1263,9 +1492,10 @@ async def get_answer(
         
         logger.info(f"🔍 Processing query: '{query}'")
         
-        # Analyze question type
+        # Analyze question type with enhanced processing
         question_type = analyze_question_type(query)
         logger.info(f"📝 Question type: {question_type['type']}")
+        logger.info(f"🔧 Original query: '{query}' -> Processed: '{question_type.get('processed_query', query)}'")
         
         # Perform enhanced question-aware retrieval
         retrieved_chunks = question_aware_retrieval(query, question_type, top_k)
