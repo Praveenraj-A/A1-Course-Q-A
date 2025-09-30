@@ -1,0 +1,29 @@
+
+    Course Q&A Chatbot - Performance Metrics Report
+    Generated: 2025-09-30 10:05:08
+    
+    SUMMARY:
+    ---------
+    Total Queries Processed: 150
+    Time Period: 24 hours
+    Success Rate: 89.0%
+    Average Response Time: 2450 ms
+    Total Estimated Cost: $0.45
+    
+    PERFORMANCE INDICATORS:
+    ----------------------
+    - 95% of queries responded within 4000ms
+    - Average confidence score: 77.0%
+    - Peak query volume: 15 queries/hour
+    
+    COST ANALYSIS:
+    -------------
+    Cost per Query: $0.003
+    Most expensive component: Gemini API
+    
+    RECOMMENDATIONS:
+    ---------------
+    1. Optimize retrieval for faster response times
+    2. Improve chunking strategy for better relevance
+    3. Monitor Gemini API usage for cost optimization
+    

@@ -1,7 +1,7 @@
 import os
 import uuid
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +23,9 @@ from contextlib import asynccontextmanager
 import logging
 import asyncio
 from spellchecker import SpellChecker
+import psutil
+import pandas as pd
+from collections import defaultdict
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -34,6 +37,130 @@ logger = logging.getLogger(__name__)
 
 # Initialize spell checker
 spell = SpellChecker()
+
+# Performance tracking variables
+performance_metrics = {
+    "query_history": [],
+    "upload_history": [],
+    "system_metrics": [],
+    "start_time": datetime.utcnow()
+}
+
+class PerformanceMetrics:
+    @staticmethod
+    def track_query(query: str, response_time: float, confidence: float, 
+                   relevant_docs: int, total_docs: int, success: bool):
+        """Track query performance metrics"""
+        metric = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "query": query,
+            "response_time_ms": response_time,
+            "confidence": confidence,
+            "relevant_docs": relevant_docs,
+            "total_docs": total_docs,
+            "success": success,
+            "query_length": len(query)
+        }
+        performance_metrics["query_history"].append(metric)
+        
+        # Keep only last 1000 queries
+        if len(performance_metrics["query_history"]) > 1000:
+            performance_metrics["query_history"] = performance_metrics["query_history"][-1000:]
+
+    @staticmethod
+    def track_upload(filename: str, chunks_processed: int, chunks_failed: int, processing_time: float):
+        """Track upload performance metrics"""
+        metric = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "filename": filename,
+            "chunks_processed": chunks_processed,
+            "chunks_failed": chunks_failed,
+            "processing_time_sec": processing_time,
+            "success_rate": chunks_processed / (chunks_processed + chunks_failed) if chunks_processed + chunks_failed > 0 else 0
+        }
+        performance_metrics["upload_history"].append(metric)
+
+    @staticmethod
+    def get_system_metrics():
+        """Get current system performance metrics"""
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "memory_usage_mb": memory_info.rss / 1024 / 1024,
+            "memory_percent": process.memory_percent(),
+            "cpu_percent": process.cpu_percent(),
+            "total_queries": len(performance_metrics["query_history"]),
+            "total_uploads": len(performance_metrics["upload_history"]),
+            "uptime_seconds": (datetime.utcnow() - performance_metrics["start_time"]).total_seconds()
+        }
+
+    @staticmethod
+    def calculate_kpis(timeframe_hours: int = 24):
+        """Calculate Key Performance Indicators"""
+        cutoff_time = datetime.utcnow() - timedelta(hours=timeframe_hours)
+        
+        recent_queries = [
+            q for q in performance_metrics["query_history"]
+            if datetime.fromisoformat(q["timestamp"]) > cutoff_time
+        ]
+        
+        if not recent_queries:
+            return {
+                "total_queries": 0,
+                "avg_response_time": 0,
+                "success_rate": 0,
+                "avg_confidence": 0,
+                "avg_relevant_docs": 0
+            }
+        
+        successful_queries = [q for q in recent_queries if q["success"]]
+        
+        return {
+            "total_queries": len(recent_queries),
+            "avg_response_time": sum(q["response_time_ms"] for q in recent_queries) / len(recent_queries),
+            "success_rate": len(successful_queries) / len(recent_queries),
+            "avg_confidence": sum(q["confidence"] for q in successful_queries) / len(successful_queries) if successful_queries else 0,
+            "avg_relevant_docs": sum(q["relevant_docs"] for q in successful_queries) / len(successful_queries) if successful_queries else 0
+        }
+
+# Cost tracking
+class CostCalculator:
+    # Approximate costs (adjust based on your actual usage)
+    GEMINI_COST_PER_1K_TOKENS = 0.000125  # $0.000125 per 1K tokens for Gemini Flash
+    PINECONE_COST_PER_1K_QUERIES = 0.10   # $0.10 per 1K queries
+    EMBEDDING_COST_PER_1K = 0.0001        # $0.0001 per 1K embeddings
+    
+    @staticmethod
+    def estimate_gemini_cost(text: str) -> float:
+        """Estimate Gemini API cost based on text length"""
+        # Rough estimate: 1 token ≈ 4 characters
+        estimated_tokens = len(text) / 4
+        cost = (estimated_tokens / 1000) * CostCalculator.GEMINI_COST_PER_1K_TOKENS
+        return cost
+    
+    @staticmethod
+    def estimate_embedding_cost(text: str) -> float:
+        """Estimate embedding generation cost"""
+        # Based on approximate costs for sentence transformers
+        return CostCalculator.EMBEDDING_COST_PER_1K * (len(text) / 1000)
+    
+    @staticmethod
+    def calculate_total_cost():
+        """Calculate total estimated cost from query history"""
+        total_cost = 0.0
+        
+        for query in performance_metrics["query_history"]:
+            # Estimate Gemini cost for query + answer (approximate)
+            query_text = query["query"]
+            estimated_answer_length = 500  # Average answer length
+            total_cost += CostCalculator.estimate_gemini_cost(query_text + " " * estimated_answer_length)
+            
+            # Pinecone query cost
+            total_cost += CostCalculator.PINECONE_COST_PER_1K_QUERIES / 1000
+        
+        return total_cost
 
 # Initialize FastAPI app with lifespan management
 @asynccontextmanager
@@ -47,7 +174,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Course Q&A API",
     description="Course Q&A Chatbot with MongoDB and Pinecone Vector Search",
-    version="4.7.0",
+    version="4.8.0",
     lifespan=lifespan
 )
 
@@ -294,6 +421,29 @@ class SourceResponse(BaseModel):
     text: str
     metadata: Dict[str, Any]
     source_id: str
+
+# New Pydantic models for metrics
+class KPIsResponse(BaseModel):
+    total_queries: int
+    avg_response_time: float
+    success_rate: float
+    avg_confidence: float
+    avg_relevant_docs: float
+    timeframe_hours: int
+
+class SystemMetricsResponse(BaseModel):
+    memory_usage_mb: float
+    memory_percent: float
+    cpu_percent: float
+    total_queries: int
+    total_uploads: int
+    uptime_seconds: float
+
+class CostMetricsResponse(BaseModel):
+    total_estimated_cost_usd: float
+    cost_per_query: float
+    total_queries: int
+    cost_breakdown: Dict[str, float]
 
 # Enhanced text processing functions
 def normalize_text(text: str) -> str:
@@ -1281,13 +1431,15 @@ async def root():
     return {
         "message": "Course Q&A API - Enhanced Gemini Integration", 
         "status": "running",
-        "version": "4.7.0",
+        "version": "4.8.0",
         "features": [
             "Enhanced Google Gemini AI Integration",
             "Improved Context Retrieval", 
             "Better Answer Relevance",
             "Advanced Citation System",
-            "Spelling Variation Tolerance"
+            "Spelling Variation Tolerance",
+            "Performance Metrics & Analytics",
+            "Cost Tracking"
         ]
     }
 
@@ -1310,12 +1462,13 @@ async def health_check():
     return {
         "status": overall_status, 
         "services": status,
-        "version": "4.7.0"
+        "version": "4.8.0"
     }
 
 @app.post("/api/v1/upload", response_model=UploadResponse)
 async def upload_file(file: UploadFile = File(...)):
     """Upload and process course material file"""
+    upload_start_time = time.time()
     
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -1408,6 +1561,14 @@ async def upload_file(file: UploadFile = File(...)):
                 logger.error(f"Error processing chunk: {e}")
                 failed_count += 1
                 continue
+        
+        processing_time = time.time() - upload_start_time
+        PerformanceMetrics.track_upload(
+            filename=file.filename,
+            chunks_processed=processed_count,
+            chunks_failed=failed_count,
+            processing_time=processing_time
+        )
         
         success_message = f"Successfully processed {file.filename}. Created {processed_count} chunks."
         if failed_count > 0:
@@ -1506,6 +1667,16 @@ async def get_answer(
         
         latency_ms = (time.time() - start_time) * 1000
         
+        # Track performance metrics
+        PerformanceMetrics.track_query(
+            query=query,
+            response_time=latency_ms,
+            confidence=answer_data["confidence"],
+            relevant_docs=len(retrieved_chunks),
+            total_docs=doc_count,
+            success=answer_data["confidence"] > 0.3 and len(retrieved_chunks) > 0
+        )
+        
         logger.info(f"✅ Answer generated in {latency_ms:.2f}ms with confidence {answer_data['confidence']:.2f}")
         
         return AnswerResponse(
@@ -1517,9 +1688,27 @@ async def get_answer(
             latency_ms=latency_ms
         )
         
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        latency_ms = (time.time() - start_time) * 1000
+        PerformanceMetrics.track_query(
+            query=query,
+            response_time=latency_ms,
+            confidence=0.0,
+            relevant_docs=0,
+            total_docs=documents_collection.count_documents({}) if documents_collection else 0,
+            success=False
+        )
+        raise e
     except Exception as e:
+        latency_ms = (time.time() - start_time) * 1000
+        PerformanceMetrics.track_query(
+            query=query,
+            response_time=latency_ms,
+            confidence=0.0,
+            relevant_docs=0,
+            total_docs=documents_collection.count_documents({}) if documents_collection else 0,
+            success=False
+        )
         logger.error(f"Error generating answer: {e}")
         raise HTTPException(status_code=500, detail=f"Error generating answer: {str(e)}")
 
@@ -1542,6 +1731,58 @@ async def get_source(source_id: str):
     except Exception as e:
         logger.error(f"Error retrieving source: {e}")
         raise HTTPException(status_code=500, detail=f"Error retrieving source: {str(e)}")
+
+# New Metrics Endpoints
+@app.get("/api/v1/metrics/kpis", response_model=KPIsResponse)
+async def get_kpis(timeframe: int = 24):
+    """Get Key Performance Indicators"""
+    kpis = PerformanceMetrics.calculate_kpis(timeframe)
+    kpis["timeframe_hours"] = timeframe
+    return KPIsResponse(**kpis)
+
+@app.get("/api/v1/metrics/system", response_model=SystemMetricsResponse)
+async def get_system_metrics():
+    """Get current system performance metrics"""
+    metrics = PerformanceMetrics.get_system_metrics()
+    return SystemMetricsResponse(**metrics)
+
+@app.get("/api/v1/metrics/cost", response_model=CostMetricsResponse)
+async def get_cost_metrics():
+    """Get cost estimation metrics"""
+    total_cost = CostCalculator.calculate_total_cost()
+    total_queries = len(performance_metrics["query_history"])
+    
+    return CostMetricsResponse(
+        total_estimated_cost_usd=total_cost,
+        cost_per_query=total_cost / total_queries if total_queries > 0 else 0,
+        total_queries=total_queries,
+        cost_breakdown={
+            "gemini_estimation": CostCalculator.GEMINI_COST_PER_1K_TOKENS,
+            "pinecone_estimation": CostCalculator.PINECONE_COST_PER_1K_QUERIES,
+            "embedding_estimation": CostCalculator.EMBEDDING_COST_PER_1K
+        }
+    )
+
+@app.get("/api/v1/metrics/export")
+async def export_metrics():
+    """Export all metrics as CSV"""
+    try:
+        # Convert to pandas DataFrame for easy CSV export
+        queries_df = pd.DataFrame(performance_metrics["query_history"]) if performance_metrics["query_history"] else pd.DataFrame()
+        uploads_df = pd.DataFrame(performance_metrics["upload_history"]) if performance_metrics["upload_history"] else pd.DataFrame()
+        
+        # Create CSV responses
+        queries_csv = queries_df.to_csv(index=False) if not queries_df.empty else "No query data available"
+        uploads_csv = uploads_df.to_csv(index=False) if not uploads_df.empty else "No upload data available"
+        
+        return {
+            "queries": queries_csv,
+            "uploads": uploads_csv,
+            "export_time": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error exporting metrics: {e}")
+        raise HTTPException(status_code=500, detail=f"Error exporting metrics: {str(e)}")
 
 # Error handlers
 @app.exception_handler(HTTPException)
