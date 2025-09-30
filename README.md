@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Course Q&A Chatbot
 An intelligent question-answering system that processes course materials and provides accurate, context-aware answers using advanced AI and vector search technologies.
 🚀 Features
@@ -25,11 +26,46 @@ pip install -r requirements.txt
 3.	Environment Configuration
 Create a .env file:
 env
+=======
+# Course Q&A Chatbot
+
+An AI-powered chatbot that answers course-related questions by processing uploaded documents and using vector search with Google Gemini.
+
+---
+
+## 🚀 Features
+- Upload PDF, DOCX, CSV, TXT files
+- Smart text chunking and context-aware search
+- AI-powered answers with Google Gemini
+- REST API built with FastAPI
+- MongoDB + Pinecone for storage and vector search
+
+---
+
+## 📦 Installation
+
+### Requirements
+- Python 3.8+
+- MongoDB
+- Pinecone API Key
+- Google AI Studio API Key
+
+### Setup
+```bash
+git clone <repository-url>
+cd course-qa-chatbot
+pip install -r requirements.txt
+Create a .env file:
+
+env
+Copy code
+>>>>>>> e6bf5b677035b37fc2272f718d3a857950be0fdf
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=courseqa
 PINECONE_API_KEY=your_pinecone_key
 GOOGLE_API_KEY=your_gemini_key
 PORT=8000
+<<<<<<< HEAD
 4.	Start the application
 bash
 python main.py
@@ -114,4 +150,32 @@ MIT License - see LICENSE file for details.
 •	Sentence Transformers for embeddings
 •	Pinecone for vector search
 •	FastAPI for high-performance API
+=======
+Run the app:
+
+bash
+Copy code
+python main.py
+📖 Usage
+Upload a document:
+
+bash
+Copy code
+curl -X POST -F "file=@notes.pdf" http://localhost:8000/api/v1/upload
+Ask a question:
+
+bash
+Copy code
+curl "http://localhost:8000/api/v1/answer?query=what%20is%20machine%20learning"
+🔧 API Endpoints
+POST /api/v1/upload → Upload documents
+
+GET /api/v1/answer → Get answers
+
+GET /api/v1/documents/count → Count uploaded docs
+
+DELETE /api/v1/documents → Clear documents
+
+GET /health → Health check
+>>>>>>> e6bf5b677035b37fc2272f718d3a857950be0fdf
 
