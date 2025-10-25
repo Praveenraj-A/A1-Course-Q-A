@@ -1,181 +1,260 @@
-<<<<<<< HEAD
-Course Q&A Chatbot
-An intelligent question-answering system that processes course materials and provides accurate, context-aware answers using advanced AI and vector search technologies.
-🚀 Features
-•	Multi-format Document Support: Upload and process PDF, DOCX, CSV, and TXT files
-•	Intelligent Text Processing: Smart chunking that preserves document structure and context
-•	Advanced Search: Hybrid retrieval combining semantic search and keyword matching
-•	AI-Powered Answers: Google Gemini integration for comprehensive, contextual responses
-•	Spelling Variation Tolerance: Automatically handles typos and word variations
-•	Citation System: Source tracking with confidence scores and references
-•	RESTful API: FastAPI-based with comprehensive endpoints and CORS support
-📦 Installation
-Prerequisites
-•	Python 3.8+
-•	MongoDB
-•	Pinecone account
-•	Google AI Studio API key
-Quick Start
-1.	Clone and setup
-bash
-git clone <repository-url>
-cd course-qa-chatbot
-2.	Install dependencies
-bash
-pip install -r requirements.txt
-3.	Environment Configuration
-Create a .env file:
-env
-=======
-# Course Q&A Chatbot
+# Course Q&A Chatbot 🤖
 
-An AI-powered chatbot that answers course-related questions by processing uploaded documents and using vector search with Google Gemini.
+An intelligent document-based question-answering system that allows students to upload course materials and get instant, context-aware answers with proper citations.
 
----
+## 🌟 Features
 
-## 🚀 Features
-- Upload PDF, DOCX, CSV, TXT files
-- Smart text chunking and context-aware search
-- AI-powered answers with Google Gemini
-- REST API built with FastAPI
-- MongoDB + Pinecone for storage and vector search
+- **Multi-Format Support**: Upload PDF, DOCX, Excel, CSV, and TXT files
+- **AI-Powered Answers**: Uses Google Gemini AI for intelligent responses
+- **Semantic Search**: Finds relevant content using meaning, not just keywords
+- **Citation System**: Every answer includes references to source documents
+- **Real-time Processing**: Fast responses with performance monitoring
+- **Responsive Design**: Works seamlessly on desktop and mobile devices
 
----
+## 🚀 Quick Start
 
-## 📦 Installation
+### Prerequisites
 
-### Requirements
 - Python 3.8+
-- MongoDB
-- Pinecone API Key
-- Google AI Studio API Key
+- MongoDB Atlas account
+- Google AI Studio API key
 
-### Setup
+### Installation
+
+1. **Clone the repository**
 ```bash
-git clone <repository-url>
+git clone <your-repo-url>
 cd course-qa-chatbot
+```
+
+2. **Install dependencies**
+```bash
 pip install -r requirements.txt
-Create a .env file:
+```
 
-env
-Copy code
->>>>>>> e6bf5b677035b37fc2272f718d3a857950be0fdf
-MONGO_URI=mongodb://localhost:27017
+3. **Set up environment variables**
+Create a `.env` file:
+```env
+MONGO_URI=your_mongodb_atlas_connection_string
+GOOGLE_API_KEY=your_google_ai_studio_key
 MONGO_DB=courseqa
-PINECONE_API_KEY=your_pinecone_key
-GOOGLE_API_KEY=your_gemini_key
+MONGO_COLLECTION=documents
 PORT=8000
-<<<<<<< HEAD
-4.	Start the application
-bash
+```
+
+4. **Run the application**
+```bash
 python main.py
-🚀 Usage
-Upload Documents
-bash
-curl -X POST -F "file=@course_materials.pdf" http://localhost:8000/api/v1/upload
-Ask Questions
-bash
-curl "http://localhost:8000/api/v1/answer?query=explain%20machine%20learning"
-API Endpoints
-Method	Endpoint	Description
-POST	/api/v1/upload	Upload documents
-GET	/api/v1/answer	Get answers
-GET	/api/v1/documents/count	Document count
-DELETE	/api/v1/documents	Clear documents
-GET	/health	Health check
-🔧 Configuration
-Environment Variables
-Variable	Description	Default
-MONGO_URI	MongoDB connection	mongodb://localhost:27017
-PINECONE_API_KEY	Pinecone API key	Required
-GOOGLE_API_KEY	Gemini AI API key	Required
-PORT	Server port	8000
-Model Configuration
-•	Embedding Model: all-MiniLM-L6-v2
-•	Reranking Model: cross-encoder/ms-marco-MiniLM-L-6-v2
-•	LLM: Google Gemini 2.0 Flash
-🛠️ Development
-Project Structure
-text
-backend/
-├── main.py              # FastAPI application
-├── core/               # Configuration & database
-├── models/             # Data schemas
-├── api/               # Route handlers
-├── services/          # Business logic
-└── utils/             # Utilities & helpers
-Key Components
-Intelligent Chunking
-•	Preserves document sections and headings
-•	Maintains sentence boundaries
-•	Configurable chunk sizes with overlap
-Hybrid Retrieval
-•	Semantic search with vector similarity
-•	Keyword search with regex matching
-•	Automatic spelling correction
-•	Cross-encoder re-ranking
-Spelling Tolerance
-Handles variations like:
-•	Plurals (internship → internships)
-•	Common typos (navigations → navigation)
-•	Verb forms (developing → development)
-📊 Performance
-•	File Size: 50MB maximum per upload
-•	Response Time: 1-4 seconds typical
-•	Document Formats: PDF, DOCX, CSV, TXT, MD
-🔍 Troubleshooting
-Common Issues
-No results for valid queries
-•	Verify documents are uploaded
-•	Check MongoDB connection
-•	Ensure Pinecone index exists
-Spelling variations not working
-•	Check spellchecker installation
-•	Review search strategy logs
-Slow response times
-•	Optimize chunk sizes
-•	Check model loading times
-Logs and Monitoring
-Enable debug logging:
-python
-logging.basicConfig(level=logging.DEBUG)
-🚀 Deployment
-Production Setup
-bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
-📄 License
-MIT License - see LICENSE file for details.
-🙏 Acknowledgments
-•	Google Gemini AI for language understanding
-•	Sentence Transformers for embeddings
-•	Pinecone for vector search
-•	FastAPI for high-performance API
-=======
-Run the app:
+```
 
-bash
-Copy code
-python main.py
-📖 Usage
-Upload a document:
+The API will be available at `http://localhost:8000`
 
-bash
-Copy code
-curl -X POST -F "file=@notes.pdf" http://localhost:8000/api/v1/upload
-Ask a question:
+## 📚 API Documentation
 
-bash
-Copy code
-curl "http://localhost:8000/api/v1/answer?query=what%20is%20machine%20learning"
-🔧 API Endpoints
-POST /api/v1/upload → Upload documents
+### Endpoints
 
-GET /api/v1/answer → Get answers
+#### **Upload Documents**
+```http
+POST /api/v1/upload
+```
+Upload course materials for processing. Supports PDF, DOCX, XLSX, CSV, and TXT files.
 
-GET /api/v1/documents/count → Count uploaded docs
+**Response:**
+```json
+{
+  "message": "Successfully processed document.pdf. Created 15 chunks.",
+  "document_id": "uuid",
+  "processing_type": "PDF extraction",
+  "chunks_processed": 15,
+  "chunks_failed": 0
+}
+```
 
-DELETE /api/v1/documents → Clear documents
+#### **Ask Questions**
+```http
+GET /api/v1/answer?query=your+question&top_k=5
+```
+Get AI-generated answers based on uploaded documents.
 
-GET /health → Health check
->>>>>>> e6bf5b677035b37fc2272f718d3a857950be0fdf
+**Response:**
+```json
+{
+  "answer": "Based on the course materials... [S1]",
+  "citations": [
+    {
+      "source_id": "doc1_chunk3",
+      "span": "pg2",
+      "confidence": 0.87,
+      "section": "Introduction",
+      "page_number": 2
+    }
+  ],
+  "confidence": 0.87,
+  "document_count": 25,
+  "relevant_docs": 3,
+  "latency_ms": 1450
+}
+```
 
+#### **System Monitoring**
+```http
+GET /api/v1/health          # System health status
+GET /api/v1/metrics/kpis    # Performance indicators
+GET /api/v1/metrics/system  # System metrics
+GET /api/v1/metrics/cost    # Cost analytics
+```
+
+## 🏗️ Architecture
+
+### System Overview
+```
+User → Frontend → FastAPI Backend → AI Services → MongoDB
+                     │
+                     ├── Document Processing
+                     ├── Semantic Search
+                     ├── Gemini AI Integration
+                     └── Performance Monitoring
+```
+
+### Key Components
+
+1. **Document Processing Pipeline**
+   - Multi-format text extraction
+   - Intelligent chunking with context preservation
+   - Vector embedding generation
+
+2. **AI-Powered Search**
+   - Semantic search using sentence transformers
+   - Hybrid retrieval (vector + text search)
+   - Question analysis and type detection
+
+3. **Answer Generation**
+   - Google Gemini AI integration
+   - Context-aware response generation
+   - Automatic citation linking
+
+4. **Monitoring & Analytics**
+   - Real-time performance tracking
+   - Cost calculation and optimization
+   - System health monitoring
+
+## 🔧 Configuration
+
+### Environment Variables
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `MONGO_URI` | MongoDB Atlas connection string | Yes |
+| `GOOGLE_API_KEY` | Google AI Studio API key | Yes |
+| `MONGO_DB` | Database name | No (default: courseqa) |
+| `MONGO_COLLECTION` | Collection name | No (default: documents) |
+| `PORT` | Server port | No (default: 8000) |
+
+### File Size Limits
+- Maximum file size: 50MB
+- Supported formats: PDF, DOCX, XLSX, CSV, TXT
+- Recommended chunk size: 800 characters with 100-character overlap
+
+## 📊 Performance Metrics
+
+The system tracks:
+- **Response Times**: Average query processing time
+- **Success Rates**: Percentage of successful answers
+- **Confidence Scores**: AI confidence in generated answers
+- **Cost Analytics**: API usage and cost estimation
+- **System Health**: Memory, CPU, and uptime monitoring
+
+## 🛠️ Development
+
+### Project Structure
+```
+course-qa-chatbot/
+├── main.py                 # FastAPI application
+├── requirements.txt        # Python dependencies
+├── .env                   # Environment variables
+└── README.md             # This file
+```
+
+### Key Dependencies
+- **FastAPI**: Modern web framework for APIs
+- **PyPDF2**: PDF text extraction
+- **python-docx**: DOCX document processing
+- **pandas**: Excel and CSV file handling
+- **sentence-transformers**: Text embeddings
+- **google-generativeai**: Gemini AI integration
+- **pymongo**: MongoDB database driver
+
+### Running in Development
+```bash
+# Install in development mode
+pip install -e .
+
+# Run with auto-reload
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## 🚀 Deployment
+
+### Production Deployment
+1. Set up MongoDB Atlas cluster
+2. Configure environment variables
+3. Deploy using:
+   - **Docker** (recommended)
+   - **Cloud platforms** (AWS, GCP, Azure)
+   - **Traditional servers**
+
+### Docker Deployment
+```dockerfile
+FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+## 🔍 Usage Examples
+
+### Example 1: Upload Course Materials
+```bash
+curl -X POST -F "file=@lecture_notes.pdf" http://localhost:8000/api/v1/upload
+```
+
+### Example 2: Ask Questions
+```bash
+curl "http://localhost:8000/api/v1/answer?query=How%20do%20I%20navigate%20browsers%20with%20Selenium&top_k=5"
+```
+
+### Example 3: Check System Health
+```bash
+curl http://localhost:8000/api/v1/health
+```
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🆘 Support
+
+For support and questions:
+- Check the [API Documentation](http://localhost:8000/docs) when running locally
+- Open an issue on GitHub
+- Contact the development team
+
+## 🙏 Acknowledgments
+
+- Google Gemini AI for advanced language model capabilities
+- MongoDB Atlas for scalable database infrastructure
+- FastAPI community for excellent web framework documentation
+- SentenceTransformers for semantic search capabilities
+
+---
+
+**Note**: This project is designed for educational purposes. Always ensure you have proper rights to upload and process documents.
