@@ -12,8 +12,7 @@ import docx
 import csv
 import io
 from pymongo import MongoClient
-from pinecone import Pinecone, ServerlessSpec
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 import numpy as np
 import re
@@ -129,7 +128,6 @@ class PerformanceMetrics:
 class CostCalculator:
     # Approximate costs (adjust based on your actual usage)
     GEMINI_COST_PER_1K_TOKENS = 0.000125  # $0.000125 per 1K tokens for Gemini Flash
-    PINECONE_COST_PER_1K_QUERIES = 0.10   # $0.10 per 1K queries
     EMBEDDING_COST_PER_1K = 0.0001        # $0.0001 per 1K embeddings
     
     @staticmethod
@@ -156,9 +154,6 @@ class CostCalculator:
             query_text = query["query"]
             estimated_answer_length = 500  # Average answer length
             total_cost += CostCalculator.estimate_gemini_cost(query_text + " " * estimated_answer_length)
-            
-            # Pinecone query cost
-            total_cost += CostCalculator.PINECONE_COST_PER_1K_QUERIES / 1000
         
         return total_cost
 
@@ -173,7 +168,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Course Q&A API",
-    description="Course Q&A Chatbot with MongoDB and Pinecone Vector Search",
+    description="Course Q&A Chatbot with MongoDB Semantic Search",
     version="4.8.0",
     lifespan=lifespan
 )
@@ -191,15 +186,11 @@ app.add_middleware(
 MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DB = os.getenv("MONGO_DB", "courseqa")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "documents")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "courseqa")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 PORT = int(os.getenv("PORT", "8000"))
 
 # Global variables for services
 embedding_model = None
-cross_encoder = None
-pinecone_index = None
 mongo_client = None
 documents_collection = None
 services_initialized = False
@@ -213,9 +204,6 @@ async def initialize_services():
     
     # Initialize MongoDB
     await initialize_mongodb()
-    
-    # Initialize Pinecone
-    await initialize_pinecone()
     
     # Initialize ML models
     await initialize_ml_models()
@@ -293,69 +281,33 @@ async def create_mongodb_indexes():
             logger.info("✅ Created unique index on 'chunk_id' field")
         except Exception as e:
             logger.info(f"✅ chunk_id index already exists or couldn't be created: {e}")
+        
+        # Create embedding index for semantic search
+        try:
+            documents_collection.create_index([("embedding", "2dsphere")])
+            logger.info("✅ Created 2dsphere index on 'embedding' field for semantic search")
+        except Exception as e:
+            logger.info(f"✅ Embedding index already exists or couldn't be created: {e}")
             
     except Exception as e:
         logger.error(f"⚠️  Error creating indexes: {e}")
 
-async def initialize_pinecone():
-    """Initialize Pinecone connection with better error handling"""
-    global pinecone_index
-    
-    if not PINECONE_API_KEY:
-        logger.warning("⚠️  Pinecone API key not configured")
-        pinecone_index = None
-        return
-        
-    try:
-        logger.info("🔧 Initializing Pinecone...")
-        pc = Pinecone(api_key=PINECONE_API_KEY)
-        
-        # Check if index exists
-        try:
-            existing_indexes = pc.list_indexes()
-            index_names = [idx.name for idx in existing_indexes.indexes] if hasattr(existing_indexes, 'indexes') else existing_indexes.names()
-            
-            if PINECONE_INDEX_NAME in index_names:
-                pinecone_index = pc.Index(PINECONE_INDEX_NAME)
-                logger.info(f"✅ Pinecone index '{PINECONE_INDEX_NAME}' connected")
-                
-                # Test the connection
-                try:
-                    pinecone_index.describe_index_stats()
-                    logger.info("✅ Pinecone index connection test successful")
-                except Exception as e:
-                    logger.warning(f"⚠️  Pinecone index connection test failed: {e}")
-                    pinecone_index = None
-            else:
-                logger.warning(f"⚠️  Pinecone index '{PINECONE_INDEX_NAME}' not found")
-                logger.info("💡 You can create the index manually in the Pinecone console")
-                pinecone_index = None
-                
-        except Exception as e:
-            logger.error(f"❌ Error listing Pinecone indexes: {e}")
-            pinecone_index = None
-            
-    except Exception as e:
-        logger.error(f"❌ Pinecone initialization error: {e}")
-        pinecone_index = None
-
 async def initialize_ml_models():
     """Initialize ML models"""
-    global embedding_model, cross_encoder
+    global embedding_model
     
     try:
+        logger.info("🔧 Loading embedding model...")
         embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        logger.info("✅ Embedding model loaded")
+        logger.info("✅ Embedding model loaded successfully")
+        
+        # Test the embedding model
+        test_embedding = embedding_model.encode("test")
+        logger.info(f"✅ Embedding model test successful - Output dimension: {len(test_embedding)}")
+        
     except Exception as e:
         logger.error(f"❌ Embedding model loading error: {e}")
         embedding_model = None
-    
-    try:
-        cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-        logger.info("✅ Cross-encoder model loaded")
-    except Exception as e:
-        logger.error(f"❌ Cross-encoder loading error: {e}")
-        cross_encoder = None
 
 async def initialize_gemini():
     """Initialize Google Gemini AI model"""
@@ -370,6 +322,13 @@ async def initialize_gemini():
         genai.configure(api_key=GOOGLE_API_KEY)
         gemini_model = genai.GenerativeModel('gemini-2.0-flash')
         logger.info("✅ Google Gemini model initialized")
+        
+        # Test the model
+        try:
+            response = gemini_model.generate_content("Hello")
+            logger.info("✅ Gemini model test successful")
+        except Exception as e:
+            logger.warning(f"⚠️  Gemini model test failed: {e}")
         
     except Exception as e:
         logger.error(f"❌ Gemini initialization error: {e}")
@@ -615,7 +574,7 @@ def analyze_question_type(query: str) -> Dict[str, Any]:
         "processed_query": query_lower
     }
 
-# Content Extraction Functions
+# IMPROVED Content Extraction Functions
 def extract_text_from_pdf(file_content: bytes) -> str:
     """Extract text from PDF file with improved parsing"""
     try:
@@ -638,42 +597,165 @@ def extract_text_from_pdf(file_content: bytes) -> str:
         raise HTTPException(status_code=400, detail=f"Error reading PDF: {str(e)}")
 
 def extract_text_from_docx(file_content: bytes) -> str:
-    """Extract text from DOCX file"""
+    """Extract text from DOCX file - IMPROVED VERSION"""
     try:
         doc_file = io.BytesIO(file_content)
         doc = docx.Document(doc_file)
         text = ""
         
+        # Extract paragraphs with better formatting
         for paragraph in doc.paragraphs:
             if paragraph.text and paragraph.text.strip():
-                text += paragraph.text.strip() + "\n"
+                # Preserve some formatting
+                para_text = paragraph.text.strip()
+                if paragraph.style.name.startswith('Heading'):
+                    text += f"\n# {para_text}\n\n"
+                else:
+                    text += para_text + "\n"
         
-        return text.strip()
+        # Extract tables with better structure
+        for table_idx, table in enumerate(doc.tables):
+            text += f"\n[Table {table_idx + 1}]\n"
+            for row_idx, row in enumerate(table.rows):
+                row_data = []
+                for cell in row.cells:
+                    if cell.text and cell.text.strip():
+                        row_data.append(cell.text.strip())
+                if row_data:
+                    text += f"Row {row_idx + 1}: {' | '.join(row_data)}\n"
+            text += "\n"
+        
+        # Extract headers and footers
+        try:
+            for section in doc.sections:
+                # Header
+                header = section.header
+                if header:
+                    for paragraph in header.paragraphs:
+                        if paragraph.text and paragraph.text.strip():
+                            text += f"[Header] {paragraph.text.strip()}\n"
+                # Footer
+                footer = section.footer
+                if footer:
+                    for paragraph in footer.paragraphs:
+                        if paragraph.text and paragraph.text.strip():
+                            text += f"[Footer] {paragraph.text.strip()}\n"
+        except Exception as e:
+            logger.warning(f"Could not extract headers/footers: {e}")
+        
+        # Clean up the text
+        text = re.sub(r'\n{3,}', '\n\n', text)  # Replace multiple newlines
+        text = text.strip()
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="No readable text found in DOCX document")
+            
+        logger.info(f"✅ Extracted {len(text)} characters from DOCX document")
+        return text
+        
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error reading DOCX: {str(e)}")
+        logger.error(f"Error extracting from DOCX: {e}")
+        raise HTTPException(status_code=400, detail=f"Error reading DOCX document: {str(e)}")
+
+def extract_text_from_xlsx(file_content: bytes) -> str:
+    """Extract text from Excel files (XLSX)"""
+    try:
+        excel_file = io.BytesIO(file_content)
+        
+        # Read all sheets
+        excel_data = pd.read_excel(excel_file, sheet_name=None)
+        text = ""
+        
+        for sheet_name, df in excel_data.items():
+            text += f"\n[Sheet: {sheet_name}]\n"
+            
+            # Add column headers
+            if not df.empty:
+                columns = df.columns.tolist()
+                text += f"Columns: {', '.join(map(str, columns))}\n\n"
+                
+                # Add sample data (first 20 rows to avoid too much text)
+                for idx, row in df.head(20).iterrows():
+                    row_text = []
+                    for col in df.columns:
+                        cell_value = row[col]
+                        if pd.notna(cell_value) and str(cell_value).strip():
+                            row_text.append(f"{col}: {str(cell_value).strip()}")
+                    if row_text:
+                        text += f"Row {idx + 1}: {' | '.join(row_text)}\n"
+                
+                # Add summary
+                text += f"\nTotal rows in '{sheet_name}': {len(df)}\n"
+                text += "-" * 50 + "\n"
+        
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="No readable data found in Excel file")
+            
+        logger.info(f"✅ Extracted data from Excel file with {len(excel_data)} sheets")
+        return text.strip()
+        
+    except Exception as e:
+        logger.error(f"Error extracting from Excel: {e}")
+        raise HTTPException(status_code=400, detail=f"Error reading Excel file: {str(e)}")
 
 def extract_text_from_csv(file_content: bytes) -> str:
     """Extract text from CSV file with better formatting"""
     try:
-        csv_file = io.StringIO(file_content.decode('utf-8'))
-        csv_reader = csv.reader(csv_file)
-        text = ""
+        # Try different encodings
+        encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
         
-        for i, row in enumerate(csv_reader):
-            if row and any(cell.strip() for cell in row):
-                clean_row = [cell.strip() for cell in row if cell.strip()]
-                if clean_row:
-                    text += f"Row {i+1}: {', '.join(clean_row)}\n"
+        for encoding in encodings:
+            try:
+                csv_content = file_content.decode(encoding)
+                csv_file = io.StringIO(csv_content)
+                
+                # Try to detect delimiter
+                sample = csv_content[:1000]
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+                
+                csv_reader = csv.reader(csv_file, delimiter=delimiter)
+                text = ""
+                headers = []
+                
+                for i, row in enumerate(csv_reader):
+                    if row and any(cell.strip() for cell in row):
+                        clean_row = [cell.strip() for cell in row if cell.strip()]
+                        if i == 0:  # Header row
+                            headers = clean_row
+                            text += f"Headers: {', '.join(headers)}\n\n"
+                        else:
+                            if headers:
+                                # Create key-value pairs with headers
+                                row_data = []
+                                for j, value in enumerate(clean_row):
+                                    if j < len(headers):
+                                        row_data.append(f"{headers[j]}: {value}")
+                                    else:
+                                        row_data.append(value)
+                                text += f"Row {i}: {' | '.join(row_data)}\n"
+                            else:
+                                text += f"Row {i}: {', '.join(clean_row)}\n"
+                
+                if not text.strip():
+                    continue  # Try next encoding
+                    
+                return text.strip()
+                
+            except (UnicodeDecodeError, csv.Error, Exception):
+                continue
         
-        return text.strip()
+        raise HTTPException(status_code=400, detail="Could not read CSV file with any supported encoding")
+        
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error reading CSV: {str(e)}")
+        logger.error(f"Error reading CSV: {e}")
+        raise HTTPException(status_code=400, detail=f"Error reading CSV file: {str(e)}")
 
 def extract_text_from_txt(file_content: bytes) -> str:
     """Extract text from TXT file with encoding detection"""
     try:
         # Try different encodings
-        encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+        encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
         
         for encoding in encodings:
             try:
@@ -681,7 +763,8 @@ def extract_text_from_txt(file_content: bytes) -> str:
                 # Clean up the text
                 text = re.sub(r'\r\n', '\n', text)
                 text = re.sub(r'\n\s*\n', '\n\n', text)
-                return text.strip()
+                if text.strip():
+                    return text.strip()
             except UnicodeDecodeError:
                 continue
         
@@ -690,7 +773,7 @@ def extract_text_from_txt(file_content: bytes) -> str:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error reading text file: {str(e)}")
 
-def intelligent_chunking(text: str, filename: str, chunk_size: int = 1200, overlap: int = 150) -> List[Dict[str, Any]]:
+def intelligent_chunking(text: str, filename: str, chunk_size: int = 800, overlap: int = 100) -> List[Dict[str, Any]]:
     """Improved chunking that preserves complete sentences and paragraphs"""
     if not text or not text.strip():
         return []
@@ -821,16 +904,18 @@ def create_chunk(content: str, filename: str, section: str, chunk_id: int) -> Di
 def generate_embedding(text: str) -> List[float]:
     """Generate embedding for text"""
     if embedding_model is None:
-        # Fallback: return zero vector (better than random)
+        logger.warning("⚠️  Embedding model not available, returning zero vector")
         return [0.0] * 384
     
     try:
         # Limit text length for embedding to avoid token limits
         if len(text) > 2000:
             text = text[:2000]
-        return embedding_model.encode(text).tolist()
+        embedding = embedding_model.encode(text).tolist()
+        logger.info(f"✅ Generated embedding with {len(embedding)} dimensions")
+        return embedding
     except Exception as e:
-        logger.error(f"Error generating embedding: {e}")
+        logger.error(f"❌ Error generating embedding: {e}")
         return [0.0] * 384
 
 async def gemini_chat_completion(prompt: str, max_tokens: int = 2000) -> Dict[str, Any]:
@@ -875,16 +960,76 @@ async def gemini_chat_completion(prompt: str, max_tokens: int = 2000) -> Dict[st
         return {"error": f"Google Gemini API request failed: {str(e)}"}
 
 def semantic_search(query: str, top_k: int = 20) -> List[Dict[str, Any]]:
-    """Enhanced semantic search with better relevance scoring and spelling tolerance"""
+    """Enhanced semantic search using MongoDB with vector similarity"""
     try:
         if documents_collection is None:
+            logger.warning("❌ Documents collection is None")
             return []
         
+        if embedding_model is None:
+            logger.warning("❌ Embedding model not available, using text search")
+            return text_search(query, top_k)
+        
+        # Generate query embedding
+        query_embedding = generate_embedding(query)
+        
+        # Use cosine similarity search as fallback
+        results = cosine_similarity_search(query_embedding, top_k)
+        
+        # Calculate enhanced relevance scores
+        for result in results:
+            content = result["content"]
+            vector_score = result.get("score", 0.5)
+            semantic_score = calculate_semantic_similarity(query, content)
+            
+            # Combine vector and semantic scores
+            result["combined_score"] = (vector_score * 0.7 + semantic_score * 0.3)
+            result["search_type"] = "vector_semantic"
+        
+        # Sort by combined score
+        results.sort(key=lambda x: x.get("combined_score", 0), reverse=True)
+        
+        logger.info(f"📚 Semantic search found {len(results)} relevant chunks")
+        return results[:top_k]
+            
+    except Exception as e:
+        logger.error(f"Error in semantic search: {e}")
+        return text_search(query, top_k)
+
+def cosine_similarity_search(query_embedding: List[float], top_k: int) -> List[Dict[str, Any]]:
+    """Fallback search using cosine similarity"""
+    try:
+        all_docs = list(documents_collection.find(
+            {"embedding": {"$exists": True}}, 
+            {"chunk_id": 1, "content": 1, "section": 1, "filename": 1, "page_number": 1, "metadata": 1, "embedding": 1}
+        ).limit(1000))  # Limit for performance
+        
+        scored_docs = []
+        for doc in all_docs:
+            if "embedding" in doc and doc["embedding"]:
+                doc_embedding = doc["embedding"]
+                # Calculate cosine similarity
+                similarity = np.dot(query_embedding, doc_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding)
+                )
+                doc["score"] = float(similarity)
+                scored_docs.append(doc)
+        
+        scored_docs.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return scored_docs[:top_k]
+        
+    except Exception as e:
+        logger.error(f"Cosine similarity search failed: {e}")
+        return []
+
+def text_search(query: str, top_k: int) -> List[Dict[str, Any]]:
+    """Enhanced text-based search with better matching"""
+    try:
         # Normalize and expand query
         normalized_query = normalize_text(query)
         expanded_terms = expand_query_terms(query)
         
-        logger.info(f"🔍 Search: '{query}' -> Normalized: '{normalized_query}'")
+        logger.info(f"🔍 Text search for: '{query}' -> Normalized: '{normalized_query}'")
         logger.info(f"📝 Expanded terms: {expanded_terms}")
         
         # Build search queries with multiple strategies
@@ -919,7 +1064,7 @@ def semantic_search(query: str, top_k: int = 20) -> List[Dict[str, Any]]:
                     "type": "any_terms"
                 })
         
-        # 4. Individual term matches with semantic similarity
+        # 4. Individual term matches
         individual_terms = normalized_query.split()
         for term in individual_terms[:4]:
             if len(term) > 2:  # Only search for terms longer than 2 characters
@@ -951,7 +1096,7 @@ def semantic_search(query: str, top_k: int = 20) -> List[Dict[str, Any]]:
                     chunk_id = result["chunk_id"]
                     if chunk_id not in seen_chunks:
                         seen_chunks.add(chunk_id)
-                        # Calculate enhanced relevance score with semantic similarity
+                        # Calculate enhanced relevance score
                         score = calculate_enhanced_relevance(result["content"], query, search_query["boost"])
                         result["score"] = score
                         result["search_type"] = search_query["type"]
@@ -961,45 +1106,45 @@ def semantic_search(query: str, top_k: int = 20) -> List[Dict[str, Any]]:
                 logger.warning(f"Search query {search_query['type']} failed: {e}")
                 continue
         
-        # If no results found, try a more lenient search
+        # If no results found, try MongoDB text search
         if not all_results:
-            logger.info("🔄 No results found, trying lenient search...")
-            lenient_results = list(documents_collection.find(
-                {"$text": {"$search": query}},
-                {
-                    "chunk_id": 1,
-                    "content": 1,
-                    "section": 1,
-                    "filename": 1,
-                    "page_number": 1,
-                    "metadata": 1,
-                    "score": {"$meta": "textScore"}
-                }
-            ).sort([("score", {"$meta": "textScore"})]).limit(top_k))
-            
-            for result in lenient_results:
-                chunk_id = result["chunk_id"]
-                if chunk_id not in seen_chunks:
-                    seen_chunks.add(chunk_id)
-                    result["score"] = result.get("score", 0.5) * 0.7  # Reduce score for text search
-                    result["search_type"] = "text_search"
-                    all_results.append(result)
+            logger.info("🔄 No results found, trying MongoDB text search...")
+            try:
+                text_results = list(documents_collection.find(
+                    {"$text": {"$search": query}},
+                    {
+                        "chunk_id": 1,
+                        "content": 1,
+                        "section": 1,
+                        "filename": 1,
+                        "page_number": 1,
+                        "metadata": 1,
+                        "score": {"$meta": "textScore"}
+                    }
+                ).sort([("score", {"$meta": "textScore"})]).limit(top_k))
+                
+                for result in text_results:
+                    chunk_id = result["chunk_id"]
+                    if chunk_id not in seen_chunks:
+                        seen_chunks.add(chunk_id)
+                        result["score"] = result.get("score", 0.5) * 0.7  # Reduce score for text search
+                        result["search_type"] = "text_search"
+                        all_results.append(result)
+            except Exception as e:
+                logger.warning(f"MongoDB text search failed: {e}")
         
         # Sort by score and return top results
         all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
         
-        logger.info(f"📚 Found {len(all_results)} total results, returning top {top_k}")
-        for i, result in enumerate(all_results[:3]):
-            logger.info(f"   {i+1}. Score: {result.get('score', 0):.2f}, Type: {result.get('search_type', 'unknown')}")
-        
+        logger.info(f"📚 Text search found {len(all_results)} total results")
         return all_results[:top_k]
             
     except Exception as e:
-        logger.error(f"Error in semantic search: {e}")
+        logger.error(f"Error in text search: {e}")
         return []
 
 def calculate_enhanced_relevance(content: str, query: str, base_boost: float = 1.0) -> float:
-    """Calculate enhanced relevance between content and query with semantic similarity"""
+    """Calculate enhanced relevance between content and query"""
     score = 0.0
     query_lower = query.lower()
     content_lower = content.lower()
@@ -1012,7 +1157,7 @@ def calculate_enhanced_relevance(content: str, query: str, base_boost: float = 1
     if query_lower in content_lower:
         score += 20.0 * base_boost
     
-    # Word overlap with term frequency consideration
+    # Word overlap
     query_words = set(re.findall(r'\w+', query_lower))
     content_words = re.findall(r'\w+', content_lower)
     content_word_set = set(content_words)
@@ -1027,108 +1172,7 @@ def calculate_enhanced_relevance(content: str, query: str, base_boost: float = 1
         term_freq = content_words.count(word)
         score += min(term_freq * 0.5, 5.0) * base_boost
     
-    # Position bonus (content at beginning is often more important)
-    for word in query_words:
-        if word in content_lower:
-            position = content_lower.find(word)
-            if position < len(content_lower) * 0.3:  # First 30%
-                score += 2.0 * base_boost
-            elif position < len(content_lower) * 0.6:  # First 60%
-                score += 1.0 * base_boost
-    
-    # Section heading bonus
-    if any(marker in content_lower for marker in [":", " - ", "—", "#", "heading", "title", "chapter"]):
-        score += 2.0 * base_boost
-    
-    # Context type bonus
-    tech_keywords = ["navigation", "browser", "driver", "selenium", "webdriver", "click", "open", "tab", "window", "automation"]
-    if any(keyword in content_lower for keyword in tech_keywords):
-        score += 3.0 * base_boost
-    
-    # Length bonus (longer content often has more context)
-    length_bonus = min(len(content) / 1000, 2.0)  # Cap at 2.0
-    score += length_bonus
-    
     return min(score, 50.0)  # Cap score
-
-def hybrid_retrieval(query: str, top_k: int = 15) -> List[Dict[str, Any]]:
-    """Enhanced hybrid retrieval with better tolerance for spelling variations"""
-    
-    # Get semantic search results
-    semantic_results = semantic_search(query, top_k * 3)
-    
-    # If we have vector search available, combine results
-    vector_results = []
-    if pinecone_index is not None and embedding_model is not None:
-        try:
-            query_embedding = generate_embedding(query)
-            
-            vector_response = pinecone_index.query(
-                vector=query_embedding,
-                top_k=top_k,
-                include_metadata=True
-            )
-            
-            # Map vector results to documents
-            for match in vector_response['matches']:
-                chunk_id = match['id']
-                if documents_collection is not None:
-                    doc = documents_collection.find_one({"chunk_id": chunk_id})
-                    if doc:
-                        doc['vector_score'] = match['score']
-                        vector_results.append(doc)
-        except Exception as e:
-            logger.warning(f"Vector search failed: {e}")
-    
-    # Combine and deduplicate results
-    all_results = []
-    seen_chunks = set()
-    
-    # Add vector results first (usually more semantically relevant)
-    for result in vector_results:
-        chunk_id = result["chunk_id"]
-        if chunk_id not in seen_chunks:
-            seen_chunks.add(chunk_id)
-            # Combine scores if available
-            if 'score' in result and 'vector_score' in result:
-                result['combined_score'] = (result['score'] * 0.4 + result['vector_score'] * 0.6)
-            elif 'vector_score' in result:
-                result['combined_score'] = result['vector_score']
-            all_results.append(result)
-    
-    # Add semantic results that weren't included
-    for result in semantic_results:
-        chunk_id = result["chunk_id"]
-        if chunk_id not in seen_chunks:
-            seen_chunks.add(chunk_id)
-            result['combined_score'] = result.get('score', 0)
-            all_results.append(result)
-    
-    # Sort by combined score
-    all_results.sort(key=lambda x: x.get('combined_score', x.get('score', 0)), reverse=True)
-    
-    # Re-rank with cross-encoder if available
-    if cross_encoder is not None and all_results:
-        try:
-            pairs = [(query, doc["content"][:2000]) for doc in all_results[:top_k*2]]
-            rerank_scores = cross_encoder.predict(pairs)
-            
-            for i, doc in enumerate(all_results[:top_k*2]):
-                doc['rerank_score'] = float(rerank_scores[i])
-            
-            all_results.sort(key=lambda x: x.get('rerank_score', 0), reverse=True)
-        except Exception as e:
-            logger.warning(f"Re-ranking failed: {e}")
-    
-    # Be more lenient with relevance threshold
-    filtered_results = []
-    for result in all_results:
-        score = result.get('rerank_score', result.get('combined_score', result.get('score', 0)))
-        if score > 0.1:  # Much lower threshold to catch more variations
-            filtered_results.append(result)
-    
-    logger.info(f"🎯 Hybrid retrieval found {len(filtered_results)} relevant chunks")
-    return filtered_results[:top_k]
 
 def question_aware_retrieval(query: str, question_type: Dict[str, Any], top_k: int = 15) -> List[Dict[str, Any]]:
     """Enhanced retrieval that considers question type and handles variations"""
@@ -1136,13 +1180,13 @@ def question_aware_retrieval(query: str, question_type: Dict[str, Any], top_k: i
     # Use processed query for retrieval if available
     retrieval_query = question_type.get('processed_query', query)
     
-    # Base retrieval with the query
-    results = hybrid_retrieval(retrieval_query, top_k * 2)
+    # Base semantic search
+    results = semantic_search(retrieval_query, top_k * 2)
     
     # If we have few results, try with the original query as fallback
     if len(results) < 3 and question_type.get('processed_query') != query:
         logger.info("🔄 Few results found, trying with original query...")
-        additional_results = hybrid_retrieval(question_type['original_query'], top_k)
+        additional_results = semantic_search(question_type['original_query'], top_k)
         # Merge results
         seen_chunks = set(r["chunk_id"] for r in results)
         for result in additional_results:
@@ -1150,24 +1194,27 @@ def question_aware_retrieval(query: str, question_type: Dict[str, Any], top_k: i
                 results.append(result)
                 seen_chunks.add(result["chunk_id"])
     
+    # If still no results, try broader text search
+    if not results:
+        logger.info("🔄 No semantic results, trying broader text search...")
+        results = text_search(query, top_k * 2)
+    
     if not results:
         return []
     
-    # Question-type specific boosting with enhanced matching
+    # Question-type specific boosting
     boosted_results = []
     for result in results:
         content = result["content"].lower()
-        score = result.get('rerank_score', result.get('combined_score', result.get('score', 0.5)))
+        score = result.get('combined_score', result.get('score', 0.5))
         
         # Enhanced content analysis
         normalized_content = normalize_text(content)
         
-        # Boost based on question type with fuzzy matching
+        # Boost based on question type
         if question_type["requires_person_info"]:
             if any(keyword in normalized_content for keyword in ["student", "name", "person", "individual", "education", "contact"]):
                 score *= 2.0
-            if "student name" in normalized_content or "name:" in normalized_content or "email" in normalized_content:
-                score *= 3.0
                 
         elif question_type["requires_contact"]:
             if any(keyword in normalized_content for keyword in ["email", "phone", "mobile", "contact", "@", "gmail"]):
@@ -1176,8 +1223,6 @@ def question_aware_retrieval(query: str, question_type: Dict[str, Any], top_k: i
         elif question_type["requires_skills"]:
             if any(keyword in normalized_content for keyword in ["skills", "technologies", "languages", "frameworks", "tools"]):
                 score *= 2.5
-            if any(keyword in normalized_content for keyword in ["python", "java", "javascript", "html", "css", "react", "node"]):
-                score *= 2.0
                 
         elif question_type["requires_projects"]:
             if any(keyword in normalized_content for keyword in ["projects", "project", "built", "developed", "created"]):
@@ -1194,8 +1239,6 @@ def question_aware_retrieval(query: str, question_type: Dict[str, Any], top_k: i
         elif question_type["requires_navigation"]:
             if any(keyword in normalized_content for keyword in ["navigate", "navigation", "browser", "url", "website", "webpage"]):
                 score *= 3.0
-            if any(keyword in normalized_content for keyword in ["selenium", "webdriver", "driver", "browser", "click", "open"]):
-                score *= 2.5
                 
         result["question_aware_score"] = score
         boosted_results.append(result)
@@ -1206,29 +1249,30 @@ def question_aware_retrieval(query: str, question_type: Dict[str, Any], top_k: i
     logger.info(f"🎯 Question-aware boosting applied, returning {len(boosted_results[:top_k])} results")
     return boosted_results[:top_k]
 
-# Answer Generation Functions - IMPROVED VERSION
+# Answer Generation Functions
 async def generate_comprehensive_answer(query: str, context_chunks: List[Dict[str, Any]], question_type: Dict[str, Any]) -> Dict[str, Any]:
     """Generate comprehensive answer using Gemini API with retrieved context"""
     
     if not context_chunks:
+        logger.warning("❌ No context chunks found for query")
         return await generate_fallback_answer(query)
     
     try:
-        # Prepare context for Gemini - include more context for better answers
+        # Prepare context for Gemini
         context_text = ""
         citation_map = {}
         
-        for i, chunk in enumerate(context_chunks[:10]):  # Use top 10 chunks for more comprehensive context
+        for i, chunk in enumerate(context_chunks[:10]):
             source_id = f"S{i+1}"
             context_text += f"[{source_id}]: {chunk['content']}\n\n"
             citation_map[source_id] = {
                 "chunk_id": chunk["chunk_id"],
                 "section": chunk.get("section", "Unknown"),
                 "page_number": chunk.get("page_number", 1),
-                "score": chunk.get('rerank_score', chunk.get('combined_score', 0.7))
+                "score": chunk.get('combined_score', chunk.get('score', 0.7))
             }
         
-        # Create enhanced Gemini prompt with spelling tolerance instructions
+        # Create enhanced Gemini prompt
         system_prompt = f"""You are an expert educational assistant. Answer the user's question using ONLY the provided context from course documents.
 
 CONTEXT DOCUMENTS:
@@ -1246,8 +1290,6 @@ CRITICAL INSTRUCTIONS:
 7. If the context contains multiple relevant points, include all of them
 8. Structure your answer to be clear and helpful
 9. Provide complete code examples or explanations when they appear in the context
-10. If the query seems to have spelling variations (like 'navigations' vs 'navigation'), interpret it based on the context
-11. Be tolerant of minor spelling differences and focus on semantic meaning
 
 ANSWER:"""
         
@@ -1268,7 +1310,7 @@ ANSWER:"""
             citations = [{
                 "source_id": chunk["chunk_id"],
                 "span": f"pg{chunk.get('page_number', 1)}",
-                "confidence": chunk.get('rerank_score', chunk.get('combined_score', 0.7)),
+                "confidence": chunk.get('combined_score', chunk.get('score', 0.7)),
                 "section": chunk.get("section", "Unknown"),
                 "page_number": chunk.get("page_number", 1)
             } for chunk in context_chunks[:3]]
@@ -1283,7 +1325,6 @@ ANSWER:"""
         
     except Exception as e:
         logger.error(f"Error in Gemini answer generation: {e}")
-        # Fallback to enhanced structured answer
         return generate_enhanced_structured_answer(query, context_chunks, question_type)
 
 def extract_citations_from_answer(answer: str, citation_map: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1320,7 +1361,7 @@ async def generate_fallback_answer(query: str) -> Dict[str, Any]:
     """Generate helpful fallback answer when no specific context is found"""
     # Try a broader search with relaxed criteria
     try:
-        broader_results = semantic_search(query, top_k=25)
+        broader_results = text_search(query, top_k=25)
         if broader_results:
             # Use the broader results to generate an answer
             return generate_enhanced_structured_answer(query, broader_results[:8], {"type": "general"})
@@ -1334,7 +1375,7 @@ async def generate_fallback_answer(query: str) -> Dict[str, Any]:
     }
 
 def generate_enhanced_structured_answer(query: str, context_chunks: List[Dict[str, Any]], question_type: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate structured answer by analyzing content directly with improved logic"""
+    """Generate structured answer by analyzing content directly"""
     
     if not context_chunks:
         return {
@@ -1343,16 +1384,11 @@ def generate_enhanced_structured_answer(query: str, context_chunks: List[Dict[st
             "confidence": 0.1
         }
     
-    # Extract key information from all chunks - use more chunks
+    # Extract key information from chunks
     relevant_content = []
     for chunk in context_chunks[:6]:
         content = chunk["content"]
-        # Check if this chunk is relevant to the query using normalized comparison
-        normalized_content = normalize_text(content)
-        normalized_query = normalize_text(query)
-        
-        if (any(term in normalized_content for term in normalized_query.split()) or 
-            calculate_semantic_similarity(query, content) > 0.3):
+        if calculate_semantic_similarity(query, content) > 0.3:
             relevant_content.append(content)
     
     if relevant_content:
@@ -1364,12 +1400,7 @@ def generate_enhanced_structured_answer(query: str, context_chunks: List[Dict[st
         relevant_sentences = []
         
         for sentence in sentences:
-            sentence_lower = sentence.lower()
-            normalized_sentence = normalize_text(sentence)
-            normalized_query = normalize_text(query)
-            
-            if (any(term in normalized_sentence for term in normalized_query.split()) and 
-                len(sentence.strip()) > 20):
+            if len(sentence.strip()) > 20:
                 relevant_sentences.append(sentence.strip())
         
         if relevant_sentences:
@@ -1388,7 +1419,7 @@ def generate_enhanced_structured_answer(query: str, context_chunks: List[Dict[st
     citations = [{
         "source_id": chunk["chunk_id"],
         "span": f"pg{chunk.get('page_number', 1)}",
-        "confidence": chunk.get('rerank_score', chunk.get('combined_score', 0.6)),
+        "confidence": chunk.get('combined_score', chunk.get('score', 0.6)),
         "section": chunk.get("section", "Unknown"),
         "page_number": chunk.get("page_number", 1)
     } for chunk in context_chunks[:3]]
@@ -1405,23 +1436,17 @@ def calculate_enhanced_confidence(context_chunks: List[Dict[str, Any]], query: s
         return 0.1
     
     # Base confidence from retrieval scores
-    retrieval_scores = [chunk.get('rerank_score', chunk.get('combined_score', chunk.get('score', 0.3))) for chunk in context_chunks]
+    retrieval_scores = [chunk.get('combined_score', chunk.get('score', 0.3)) for chunk in context_chunks]
     avg_retrieval_score = sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0.3
     
-    # Answer length factor (longer answers often more confident)
+    # Answer length factor
     answer_length_factor = min(len(answer) / 800, 1.0)
     
-    # Specificity factor (answers with specific details are better)
+    # Specificity factor
     specificity_keywords = ["specifically", "for example", "including", "such as", "details", "code", "example"]
     specificity_factor = 1.0 if any(keyword in answer.lower() for keyword in specificity_keywords) else 0.7
     
-    # Query coverage factor with normalized text
-    query_terms = set(normalize_text(query).split())
-    answer_terms = set(normalize_text(answer).split())
-    coverage_factor = len(query_terms & answer_terms) / len(query_terms) if query_terms else 0.5
-    
-    confidence = (avg_retrieval_score * 0.6 + answer_length_factor * 0.2 + 
-                 specificity_factor * 0.1 + coverage_factor * 0.1)
+    confidence = (avg_retrieval_score * 0.6 + answer_length_factor * 0.2 + specificity_factor * 0.2)
     
     return min(confidence, 0.95)
 
@@ -1429,17 +1454,16 @@ def calculate_enhanced_confidence(context_chunks: List[Dict[str, Any]], query: s
 @app.get("/")
 async def root():
     return {
-        "message": "Course Q&A API - Enhanced Gemini Integration", 
+        "message": "Course Q&A API - MongoDB Semantic Search", 
         "status": "running",
         "version": "4.8.0",
         "features": [
-            "Enhanced Google Gemini AI Integration",
-            "Improved Context Retrieval", 
+            "MongoDB Atlas Semantic Search",
+            "Google Gemini AI Integration", 
+            "Enhanced Context Retrieval",
             "Better Answer Relevance",
             "Advanced Citation System",
-            "Spelling Variation Tolerance",
-            "Performance Metrics & Analytics",
-            "Cost Tracking"
+            "Performance Metrics & Analytics"
         ]
     }
 
@@ -1448,9 +1472,7 @@ async def health_check():
     """Health check endpoint"""
     status = {
         "mongo": check_database_available(),
-        "pinecone": pinecone_index is not None,
         "embedding_model": embedding_model is not None,
-        "cross_encoder": cross_encoder is not None,
         "gemini": gemini_model is not None,
         "services_initialized": services_initialized
     }
@@ -1500,6 +1522,9 @@ async def upload_file(file: UploadFile = File(...)):
         elif filename.endswith('.docx'):
             text = extract_text_from_docx(file_content)
             processing_type = "DOCX extraction"
+        elif filename.endswith(('.xlsx', '.xls')):
+            text = extract_text_from_xlsx(file_content)
+            processing_type = "Excel extraction"
         elif filename.endswith('.csv'):
             text = extract_text_from_csv(file_content)
             processing_type = "CSV extraction"
@@ -1507,15 +1532,15 @@ async def upload_file(file: UploadFile = File(...)):
             text = extract_text_from_txt(file_content)
             processing_type = "Text extraction"
         else:
-            raise HTTPException(status_code=400, detail="Unsupported file format. Supported formats: PDF, DOCX, CSV, TXT, MD")
+            raise HTTPException(status_code=400, detail="Unsupported file format. Supported formats: PDF, DOCX, XLSX, CSV, TXT, MD")
         
         if not text or len(text.strip()) == 0:
             raise HTTPException(status_code=400, detail="No text content could be extracted from the file")
         
         logger.info(f"📄 Extracted {len(text)} characters from {file.filename}")
         
-        # Use improved chunking with larger chunks for better context
-        chunks = intelligent_chunking(text, file.filename, chunk_size=1200, overlap=150)
+        # Use improved chunking
+        chunks = intelligent_chunking(text, file.filename, chunk_size=800, overlap=100)
         logger.info(f"📦 Created {len(chunks)} intelligent chunks from {file.filename}")
         
         if not chunks:
@@ -1530,35 +1555,17 @@ async def upload_file(file: UploadFile = File(...)):
                 # Generate embedding
                 embedding = generate_embedding(chunk["content"])
                 
+                # Add embedding to chunk for semantic search
+                chunk["embedding"] = embedding
+                
                 # Store in MongoDB
-                mongo_doc = chunk.copy()
-                documents_collection.insert_one(mongo_doc)
+                documents_collection.insert_one(chunk)
                 processed_count += 1
                 
-                # Store in Pinecone if available
-                if pinecone_index is not None:
-                    try:
-                        metadata = {
-                            "filename": chunk["filename"],
-                            "section": chunk["section"],
-                            "content_preview": chunk["content"][:200],
-                            "chunk_index": i,
-                            "word_count": len(chunk["content"].split())
-                        }
-                        
-                        pinecone_index.upsert(
-                            vectors=[{
-                                "id": chunk["chunk_id"],
-                                "values": embedding,
-                                "metadata": metadata
-                            }]
-                        )
-                    except Exception as e:
-                        logger.warning(f"⚠️  Failed to store chunk in Pinecone: {e}")
-                        failed_count += 1
+                logger.info(f"✅ Successfully stored chunk {chunk['chunk_id']} in MongoDB")
                 
             except Exception as e:
-                logger.error(f"Error processing chunk: {e}")
+                logger.error(f"Error processing chunk {i}: {e}")
                 failed_count += 1
                 continue
         
@@ -1570,9 +1577,9 @@ async def upload_file(file: UploadFile = File(...)):
             processing_time=processing_time
         )
         
-        success_message = f"Successfully processed {file.filename}. Created {processed_count} chunks."
+        success_message = f"Successfully processed {file.filename}. Created {processed_count} chunks with semantic embeddings."
         if failed_count > 0:
-            success_message += f" {failed_count} chunks failed to process in Pinecone (but are stored in MongoDB)."
+            success_message += f" {failed_count} chunks failed to process."
         
         return UploadResponse(
             message=success_message,
@@ -1602,32 +1609,16 @@ async def get_document_count():
 
 @app.delete("/api/v1/documents")
 async def clear_all_documents():
-    """Clear all documents from both MongoDB and Pinecone"""
+    """Clear all documents from MongoDB"""
     try:
         if not check_database_available():
             return {"message": "Database service not available"}
         
-        # Get all chunk IDs before deletion
-        chunks = list(documents_collection.find({}, {"chunk_id": 1}))
-        chunk_ids = [chunk["chunk_id"] for chunk in chunks] if chunks else []
-        
         # Delete from MongoDB
         mongo_result = documents_collection.delete_many({})
         
-        # Delete from Pinecone if available
-        pinecone_deleted = 0
-        if chunk_ids and pinecone_index is not None:
-            try:
-                batch_size = 100
-                for i in range(0, len(chunk_ids), batch_size):
-                    batch = chunk_ids[i:i + batch_size]
-                    pinecone_index.delete(ids=batch)
-                    pinecone_deleted += len(batch)
-            except Exception as e:
-                logger.error(f"Error deleting from Pinecone: {e}")
-        
         return {
-            "message": f"Successfully cleared {mongo_result.deleted_count} documents from MongoDB and {pinecone_deleted} vectors from Pinecone"
+            "message": f"Successfully cleared {mongo_result.deleted_count} documents from MongoDB"
         }
     except Exception as e:
         logger.error(f"Error clearing documents: {e}")
@@ -1656,9 +1647,8 @@ async def get_answer(
         # Analyze question type with enhanced processing
         question_type = analyze_question_type(query)
         logger.info(f"📝 Question type: {question_type['type']}")
-        logger.info(f"🔧 Original query: '{query}' -> Processed: '{question_type.get('processed_query', query)}'")
         
-        # Perform enhanced question-aware retrieval
+        # Perform enhanced question-aware retrieval using semantic search
         retrieved_chunks = question_aware_retrieval(query, question_type, top_k)
         logger.info(f"📚 Retrieved {len(retrieved_chunks)} relevant chunks")
         
@@ -1732,7 +1722,7 @@ async def get_source(source_id: str):
         logger.error(f"Error retrieving source: {e}")
         raise HTTPException(status_code=500, detail=f"Error retrieving source: {str(e)}")
 
-# New Metrics Endpoints
+# Metrics Endpoints
 @app.get("/api/v1/metrics/kpis", response_model=KPIsResponse)
 async def get_kpis(timeframe: int = 24):
     """Get Key Performance Indicators"""
@@ -1758,7 +1748,6 @@ async def get_cost_metrics():
         total_queries=total_queries,
         cost_breakdown={
             "gemini_estimation": CostCalculator.GEMINI_COST_PER_1K_TOKENS,
-            "pinecone_estimation": CostCalculator.PINECONE_COST_PER_1K_QUERIES,
             "embedding_estimation": CostCalculator.EMBEDDING_COST_PER_1K
         }
     )
