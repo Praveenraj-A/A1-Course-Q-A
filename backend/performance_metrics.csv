@@ -1,6 +1,1 @@
-timestamp,query_example,response_time_ms,confidence_score,relevant_docs_found,success
-2025-09-30T10:05:08.794365,What is machine learning?,1200,0.7,3,True
-2025-09-30T10:05:08.794365,Explain neural networks,1800,0.8,5,True
-2025-09-30T10:05:08.794365,Course prerequisites,2200,0.9,2,True
-2025-09-30T10:05:08.794365,Grading policy,2800,0.6,4,False
-2025-09-30T10:05:08.794365,Assignment deadlines,3500,0.85,3,True
+timestamp,query,response_time_ms,confidence,relevant_docs,success

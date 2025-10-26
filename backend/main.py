@@ -25,6 +25,10 @@ from spellchecker import SpellChecker
 import psutil
 import pandas as pd
 from collections import defaultdict
+import matplotlib.pyplot as plt
+import seaborn as sns
+import json
+import sys
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -1792,3 +1796,233 @@ async def general_exception_handler(request, exc):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
+sys.path.append(os.path.dirname(os.path.abspath(".\generate_metrics_report.py")))
+
+def generate_metrics_report():
+    """Generate comprehensive metrics report using actual backend data"""
+    
+    try:
+        # Import the performance metrics from your main.py
+        from main import performance_metrics, CostCalculator, PerformanceMetrics
+        
+        # Get actual metrics data
+        query_history = performance_metrics.get("query_history", [])
+        upload_history = performance_metrics.get("upload_history", [])
+        
+        # Calculate time-based metrics
+        kpis = PerformanceMetrics.calculate_kpis(24)  # Last 24 hours
+        system_metrics = PerformanceMetrics.get_system_metrics()
+        total_cost = CostCalculator.calculate_total_cost()
+        
+        # Prepare report data from actual metrics
+        report_data = {
+            "summary": {
+                "total_queries": len(query_history),
+                "time_period": "24 hours",
+                "success_rate": kpis.get("success_rate", 0),
+                "avg_response_time": kpis.get("avg_response_time", 0),
+                "total_cost_estimate": total_cost
+            },
+            "performance_metrics": {
+                "response_time_distribution": [q.get("response_time_ms", 0) for q in query_history[-50:]],  # Last 50 queries
+                "confidence_scores": [q.get("confidence", 0) for q in query_history[-50:] if q.get("confidence", 0) > 0],
+                "queries_per_hour": calculate_queries_per_hour(query_history),
+                "success_rates": [1 if q.get("success", False) else 0 for q in query_history[-20:]]
+            },
+            "cost_analysis": {
+                "cost_per_query": total_cost / len(query_history) if query_history else 0,
+                "main_components": ["Gemini API", "Embedding Generation"],
+                "cost_breakdown": [
+                    total_cost * 0.8,  # Estimate 80% for Gemini
+                    total_cost * 0.2   # Estimate 20% for embeddings
+                ]
+            },
+            "system_health": {
+                "memory_usage_mb": system_metrics.get("memory_usage_mb", 0),
+                "cpu_percent": system_metrics.get("cpu_percent", 0),
+                "uptime_seconds": system_metrics.get("uptime_seconds", 0),
+                "total_uploads": len(upload_history)
+            }
+        }
+        
+    except ImportError:
+        print("⚠️  Could not import from main.py, using sample data")
+        # Fallback to sample data if main.py is not available
+        report_data = create_sample_data()
+    
+    # Create visualizations
+    plt.style.use('default')
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    
+    # Response time distribution
+    if report_data["performance_metrics"]["response_time_distribution"]:
+        axes[0, 0].hist(report_data["performance_metrics"]["response_time_distribution"], bins=10, alpha=0.7, color='skyblue', edgecolor='black')
+        axes[0, 0].set_title('Response Time Distribution (ms)')
+        axes[0, 0].set_xlabel('Response Time (ms)')
+        axes[0, 0].set_ylabel('Frequency')
+        axes[0, 0].grid(True, alpha=0.3)
+    else:
+        axes[0, 0].text(0.5, 0.5, 'No response time data\navailable', ha='center', va='center', transform=axes[0, 0].transAxes)
+        axes[0, 0].set_title('Response Time Distribution (ms)')
+    
+    # Confidence scores
+    if report_data["performance_metrics"]["confidence_scores"]:
+        axes[0, 1].hist(report_data["performance_metrics"]["confidence_scores"], bins=10, alpha=0.7, color='lightgreen', edgecolor='black')
+        axes[0, 1].set_title('Confidence Score Distribution')
+        axes[0, 1].set_xlabel('Confidence Score')
+        axes[0, 1].set_ylabel('Frequency')
+        axes[0, 1].grid(True, alpha=0.3)
+    else:
+        axes[0, 1].text(0.5, 0.5, 'No confidence score data\navailable', ha='center', va='center', transform=axes[0, 1].transAxes)
+        axes[0, 1].set_title('Confidence Score Distribution')
+    
+    # Query volume over time
+    if report_data["performance_metrics"]["queries_per_hour"]:
+        hours = list(range(len(report_data["performance_metrics"]["queries_per_hour"])))
+        axes[1, 0].plot(hours, report_data["performance_metrics"]["queries_per_hour"], marker='o', color='orange', linewidth=2, markersize=6)
+        axes[1, 0].set_title('Query Volume Over Time')
+        axes[1, 0].set_xlabel('Hour')
+        axes[1, 0].set_ylabel('Queries per Hour')
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].fill_between(hours, report_data["performance_metrics"]["queries_per_hour"], alpha=0.3, color='orange')
+    else:
+        axes[1, 0].text(0.5, 0.5, 'No query volume data\navailable', ha='center', va='center', transform=axes[1, 0].transAxes)
+        axes[1, 0].set_title('Query Volume Over Time')
+    
+    # Cost breakdown
+    components = report_data["cost_analysis"]["main_components"]
+    costs = report_data["cost_analysis"]["cost_breakdown"]
+    if any(costs):
+        axes[1, 1].pie(costs, labels=components, autopct='%1.1f%%', startangle=90, colors=['#ff9999','#66b3ff'])
+        axes[1, 1].set_title('Cost Breakdown')
+    else:
+        axes[1, 1].text(0.5, 0.5, 'No cost data\navailable', ha='center', va='center', transform=axes[1, 1].transAxes)
+        axes[1, 1].set_title('Cost Breakdown')
+    
+    plt.tight_layout()
+    plt.savefig('metrics_report.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Generate CSV report with actual query data
+    try:
+        if query_history:
+            csv_data = {
+                'timestamp': [q.get('timestamp', '') for q in query_history[-100:]],  # Last 100 queries
+                'query': [q.get('query', '')[:100] + '...' if len(q.get('query', '')) > 100 else q.get('query', '') for q in query_history[-100:]],
+                'response_time_ms': [q.get('response_time_ms', 0) for q in query_history[-100:]],
+                'confidence': [q.get('confidence', 0) for q in query_history[-100:]],
+                'relevant_docs': [q.get('relevant_docs', 0) for q in query_history[-100:]],
+                'success': [q.get('success', False) for q in query_history[-100:]]
+            }
+            df = pd.DataFrame(csv_data)
+            df.to_csv('performance_metrics.csv', index=False)
+        else:
+            # Create empty CSV with headers if no data
+            df = pd.DataFrame(columns=['timestamp', 'query', 'response_time_ms', 'confidence', 'relevant_docs', 'success'])
+            df.to_csv('performance_metrics.csv', index=False)
+    except Exception as e:
+        print(f"⚠️  Error generating CSV: {e}")
+    
+    # Generate summary report
+    success_rate = report_data['summary']['success_rate']
+    avg_response_time = report_data['summary']['avg_response_time']
+    total_queries = report_data['summary']['total_queries']
+    
+    summary_report = f"""
+    Course Q&A Chatbot - Performance Metrics Report
+    Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+    
+    SUMMARY:
+    ---------
+    Total Queries Processed: {total_queries}
+    Time Period: {report_data['summary']['time_period']}
+    Success Rate: {success_rate:.1%}
+    Average Response Time: {avg_response_time:.0f} ms
+    Total Estimated Cost: ${report_data['summary']['total_cost_estimate']:.4f}
+    
+    SYSTEM HEALTH:
+    -------------
+    Memory Usage: {report_data['system_health']['memory_usage_mb']:.1f} MB
+    CPU Usage: {report_data['system_health']['cpu_percent']:.1f}%
+    Uptime: {report_data['system_health']['uptime_seconds'] / 3600:.1f} hours
+    Total Documents Uploaded: {report_data['system_health']['total_uploads']}
+    
+    PERFORMANCE INDICATORS:
+    ----------------------
+    - Average confidence score: {np.mean(report_data['performance_metrics']['confidence_scores']) if report_data['performance_metrics']['confidence_scores'] else 0:.1%}
+    - Peak query volume: {max(report_data['performance_metrics']['queries_per_hour']) if report_data['performance_metrics']['queries_per_hour'] else 0} queries/hour
+    - Total successful queries: {int(success_rate * total_queries) if total_queries > 0 else 0}
+    
+    COST ANALYSIS:
+    -------------
+    Cost per Query: ${report_data['cost_analysis']['cost_per_query']:.4f}
+    Most expensive component: {components[costs.index(max(costs))] if costs else 'N/A'}
+    
+    RECOMMENDATIONS:
+    ---------------
+    1. {'Optimize query processing for faster responses' if avg_response_time > 3000 else 'Response times are optimal'}
+    2. {'Improve retrieval accuracy' if success_rate < 0.8 else 'Success rate is good'}
+    3. {'Monitor cost efficiency' if report_data['cost_analysis']['cost_per_query'] > 0.01 else 'Cost efficiency is good'}
+    """
+    
+    with open('metrics_summary.txt', 'w') as f:
+        f.write(summary_report)
+    
+    print("✅ Metrics report generated successfully!")
+    print(f"   - Total queries analyzed: {total_queries}")
+    print(f"   - Success rate: {success_rate:.1%}")
+    print(f"   - Average response time: {avg_response_time:.0f} ms")
+    print("   - metrics_report.png (Visualizations)")
+    print("   - performance_metrics.csv (Raw data)")
+    print("   - metrics_summary.txt (Summary report)")
+
+def calculate_queries_per_hour(query_history):
+    """Calculate queries per hour from query history"""
+    if not query_history:
+        return []
+    
+    # Group queries by hour
+    hourly_counts = {}
+    for query in query_history[-24:]:  # Last 24 queries or adjust as needed
+        try:
+            timestamp = datetime.fromisoformat(query.get('timestamp', ''))
+            hour_key = timestamp.strftime('%H:00')
+            hourly_counts[hour_key] = hourly_counts.get(hour_key, 0) + 1
+        except:
+            continue
+    
+    # Return counts for visualization
+    return list(hourly_counts.values())[-8:]  # Last 8 hours
+
+def create_sample_data():
+    """Create sample data for demonstration"""
+    return {
+        "summary": {
+            "total_queries": 45,
+            "time_period": "24 hours",
+            "success_rate": 0.82,
+            "avg_response_time": 1850,
+            "total_cost_estimate": 0.023
+        },
+        "performance_metrics": {
+            "response_time_distribution": [1200, 1800, 2200, 1600, 2500, 1900, 2100],
+            "confidence_scores": [0.7, 0.8, 0.9, 0.6, 0.85, 0.75, 0.88],
+            "queries_per_hour": [5, 8, 12, 7, 10, 15, 9, 11],
+            "success_rates": [1, 1, 1, 0, 1, 1, 1, 1, 0, 1]
+        },
+        "cost_analysis": {
+            "cost_per_query": 0.0005,
+            "main_components": ["Gemini API", "Embedding Generation"],
+            "cost_breakdown": [0.0004, 0.0001]
+        },
+        "system_health": {
+            "memory_usage_mb": 245.6,
+            "cpu_percent": 12.3,
+            "uptime_seconds": 86400,
+            "total_uploads": 8
+        }
+    }
+
+if __name__ == "__main__":
+    generate_metrics_report()
